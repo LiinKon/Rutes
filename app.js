@@ -17,6 +17,7 @@ const CALLOUTS = {
   remark: { name: 'Ремарка',          color: '#f0c060' },
   read:   { name: 'Зачитать игрокам', color: '#5b8def' },
   warn:   { name: 'Важно',            color: '#e05a5a' },
+  check:  { name: 'Проверка',         color: '#3aa6a0' },
 };
 const FONTS = [
   { id: 'sans',  name: 'Обычный',      css: 'system-ui,-apple-system,"Segoe UI",Roboto,sans-serif' },
@@ -104,11 +105,12 @@ function addItem(type, x, y, props = {}) {
 }
 function adjAdd(e) { for (const id of [e.from, e.to]) { let s = adj.get(id); if (!s) adj.set(id, s = new Set()); s.add(e.id); } }
 function adjDel(e) { adj.get(e.from)?.delete(e.id); adj.get(e.to)?.delete(e.id); }
-function addEdge(from, to, label = '') {
+function addEdge(from, to, label = '', extra) {
   if (from === to) return null;
-  for (const id of adj.get(from) || []) { const e = edges.get(id); if (e.from === from && e.to === to) return e; }
-  const e = { id: uid(), from, to, label }; edges.set(e.id, e); adjAdd(e); dirty(); return e;
+  for (const id of adj.get(from) || []) { const e = edges.get(id); if (e.from === from && e.to === to) { if (extra) Object.assign(e, extra); return e; } }
+  const e = { id: uid(), from, to, label, ...(extra || {}) }; edges.set(e.id, e); adjAdd(e); dirty(); return e;
 }
+const edgeExtra = e => (e.kind ? { kind: e.kind, anchor: e.anchor, anchorText: e.anchorText } : undefined);
 function removeEdge(id) { const e = edges.get(id); if (!e) return; adjDel(e); edges.delete(id); if (selEdge === id) selEdge = null; }
 function removeItem(id) {
   for (const eid of [...(adj.get(id) || [])]) removeEdge(eid);
@@ -116,7 +118,7 @@ function removeItem(id) {
   if (editing && editing.id === id) editing = null;
 }
 const touch = it => { it._v = (it._v || 0) + 1; };
-function clean(it) { const o = { ...it }; delete o._v; return o; }
+function clean(it) { const o = { ...it }; delete o._v; delete o._paraY; return o; }
 
 function loadData(its, eds) {
   items.clear(); edges.clear(); adj.clear(); maxZ = 0;
@@ -294,7 +296,11 @@ function render() {
   }
   for (const [id, el] of itemEls) if (!seen.has(id)) { el.remove(); itemEls.delete(id); }
   if (editing && editing.measure) { const it = items.get(editing.id); if (it) measure.push(it); editing.measure = false; }
-  for (const it of measure) { const el = itemEls.get(it.id); if (el) { const h = el.offsetHeight; if (h && h !== it.h) it.h = h; } }
+  for (const it of measure) {
+    const el = itemEls.get(it.id); if (!el) continue;
+    const h = el.offsetHeight; if (h && h !== it.h) it.h = h;
+    if (it.type === 'card') it._paraY = lod ? null : paraYFromEl(el, it, view.s);
+  }
 
   // размеры svg под содержимое
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
@@ -319,14 +325,16 @@ function render() {
     eseen.add(e.id);
     let gEl = edgeEls.get(e.id);
     if (!gEl) { gEl = makeEdgeEl(e.id); edgeEls.set(e.id, gEl); edgeLayer.appendChild(gEl); }
-    const geo = edgeGeo(a, b);
+    const pin = e.kind === 'pin';
+    const geo = pin ? pinGeo(a, b, e) : edgeGeo(a, b);
+    if (gEl._pin !== pin) { gEl.classList.toggle('pin', pin); gEl._pin = pin; gEl._sel = null; }
     if (gEl._d !== geo.d) { gEl._hit.setAttribute('d', geo.d); gEl._line.setAttribute('d', geo.d); gEl._d = geo.d; }
     if (gEl._lab !== e.label || gEl._mx !== geo.mx || gEl._my !== geo.my) {
       gEl._text.textContent = e.label; gEl._text.setAttribute('x', geo.mx); gEl._text.setAttribute('y', geo.my);
       gEl._lab = e.label; gEl._mx = geo.mx; gEl._my = geo.my;
     }
     const sel = selEdge === e.id;
-    if (gEl._sel !== sel) { gEl.classList.toggle('sel', sel); gEl._line.setAttribute('marker-end', sel ? 'url(#arrowSel)' : 'url(#arrow)'); gEl._sel = sel; }
+    if (gEl._sel !== sel) { gEl.classList.toggle('sel', sel); gEl._line.setAttribute('marker-end', sel ? 'url(#arrowSel)' : pin ? 'url(#arrowPin)' : 'url(#arrow)'); gEl._sel = sel; }
   }
   for (const [id, el] of edgeEls) if (!eseen.has(id)) { el.remove(); edgeEls.delete(id); }
 
@@ -563,7 +571,14 @@ function onUp(e, cancelled) {
       break;
     case 'resize': dirty(); break;
     case 'link':
-      if (g.over) { itemEls.get(g.over)?.classList.remove('target'); commit(); addEdge(g.from, g.over); }
+      if (g.over) {
+        itemEls.get(g.over)?.classList.remove('target'); commit();
+        const src = items.get(g.from), dst = items.get(g.over);
+        // от проверки, ремарки или заметки к сцене — стрелка-указатель в абзац, на котором отпустили
+        const k = src && dst && src.type !== 'card' && dst.type === 'card' ? paraAtPoint(dst, e.clientX, e.clientY) : null;
+        if (k != null) addEdge(g.from, g.over, '', { kind: 'pin', anchor: k, anchorText: paraList(dst.text)[k].trim().slice(0, 40) });
+        else addEdge(g.from, g.over);
+      }
       else if (g.moved) {
         commit();
         const a = items.get(g.from), right = wp.x >= a.x + a.w / 2;
@@ -677,6 +692,7 @@ const INSERTS = [
   { type: 'callout', label: 'Ремарка', key: 'R', mk: CALLOUTS.remark.color, props: { variant: 'remark' }, mobile: true },
   { type: 'callout', label: 'Зачитать игрокам', mk: CALLOUTS.read.color, props: { variant: 'read' }, mobile: true },
   { type: 'callout', label: 'Важно', mk: CALLOUTS.warn.color, props: { variant: 'warn' }, mobile: true },
+  { type: 'callout', label: 'Проверка / спасбросок', key: 'K', mk: CALLOUTS.check.color, props: { variant: 'check' }, mobile: true },
   { type: 'zone', label: 'Зона-выделение', key: 'Z', mk: ZONE_COLORS[2] },
   { type: 'image', label: 'Картинка по ссылке', key: 'I', mk: '#9aa1ad' },
 ];
@@ -724,9 +740,56 @@ function imageUrlFrom(dt) {
   const cand = uri || txt;
   return /^https?:\/\/\S+$/i.test(cand) || /^data:image\//i.test(cand) ? cand : null;
 }
+// ---- Копирование блоков: Ctrl+C / Ctrl+X / Ctrl+V ----
+const CLIP_MIME = 'application/x-razvilka';
+let clipMem = null, clipText = '', pasteShift = 0;
+function clipFromSelection() {
+  const list = selItems(); if (!list.length) return null;
+  const ids = new Set(list.map(i => i.id));
+  return { items: list.map(clean), edges: [...edges.values()].filter(e => ids.has(e.from) && ids.has(e.to)).map(e => ({ ...e })) };
+}
+const clipReadable = c => c.items.map(i => [i.title, i.text, i.label].filter(Boolean).join('\n')).filter(Boolean).join('\n\n') || 'Развилка: блоки';
+function onCopy(e, cut) {
+  if (editing || isTyping() || !selected.size) return;
+  const c = clipFromSelection(); if (!c) return;
+  e.preventDefault();
+  const json = JSON.stringify(c);
+  clipMem = c; clipText = clipReadable(c); pasteShift = 0;
+  try { e.clipboardData.setData('text/plain', clipText); e.clipboardData.setData(CLIP_MIME, json); } catch {}
+  try { localStorage.setItem('razvilka.clip', JSON.stringify({ text: clipText, data: c })); } catch {}
+  if (cut) deleteSelection();
+  toast((cut ? 'Вырезано' : 'Скопировано') + ': ' + c.items.length + ' ' + plural(c.items.length, 'блок', 'блока', 'блоков'), 1500);
+}
+const plural = (n, a, b, c) => n % 10 === 1 && n % 100 !== 11 ? a : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? b : c;
+document.addEventListener('copy', e => onCopy(e, false));
+document.addEventListener('cut', e => onCopy(e, true));
+function pasteBlocks(c) {
+  if (!c || !Array.isArray(c.items) || !c.items.length) return false;
+  commit();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const o of c.items) { x0 = Math.min(x0, o.x); y0 = Math.min(y0, o.y); x1 = Math.max(x1, o.x + (o.w || 0)); y1 = Math.max(y1, o.y + (o.h || 0)); }
+  const t = viewCenterWorld(); pasteShift += 24;
+  const dx = Math.round(t.x - (x0 + x1) / 2 + (lastPointer ? 0 : pasteShift)), dy = Math.round(t.y - (y0 + y1) / 2 + (lastPointer ? 0 : pasteShift));
+  const map = new Map(); selected.clear(); selEdge = null;
+  for (const o of c.items) {
+    if (!defaults(o.type)) continue;
+    const copy = { ...o }; delete copy.id; delete copy.z; delete copy.x; delete copy.y;
+    const n = addItem(o.type, o.x + dx, o.y + dy, copy); map.set(o.id, n.id); selected.add(n.id);
+  }
+  for (const e of c.edges || []) if (map.has(e.from) && map.has(e.to)) addEdge(map.get(e.from), map.get(e.to), e.label || '', edgeExtra(e));
+  selChanged(); dirty();
+  return true;
+}
 document.addEventListener('paste', e => {
   if (editing || isTyping()) return;
   const dt = e.clipboardData; if (!dt) return;
+  // сначала — наши блоки (из этой вкладки, другого окна или другой доски)
+  let c = null;
+  try { const raw = dt.getData(CLIP_MIME); if (raw) c = JSON.parse(raw); } catch {}
+  const plain = (dt.getData('text/plain') || '').trim();
+  if (!c && plain && clipMem && plain === clipText.trim()) c = clipMem;
+  if (!c && plain) { try { const st = JSON.parse(localStorage.getItem('razvilka.clip') || 'null'); if (st && plain === String(st.text).trim()) c = st.data; } catch {} }
+  if (c && pasteBlocks(c)) { e.preventDefault(); return; }
   const url = imageUrlFrom(dt);
   if (url) { e.preventDefault(); addImageFromUrl(url, viewCenterWorld()); return; }
   const txt = (dt.getData('text/plain') || '').trim();
@@ -756,7 +819,7 @@ function duplicateSelection() {
     const o = items.get(id); const copy = clean(o); delete copy.id; delete copy.z; delete copy.x; delete copy.y;
     const c = addItem(o.type, o.x + 30, o.y + 30, copy); map.set(id, c.id);
   }
-  for (const e of [...edges.values()]) if (map.has(e.from) && map.has(e.to)) addEdge(map.get(e.from), map.get(e.to), e.label);
+  for (const e of [...edges.values()]) if (map.has(e.from) && map.has(e.to)) addEdge(map.get(e.from), map.get(e.to), e.label, edgeExtra(e));
   selected.clear(); for (const v of map.values()) selected.add(v); selChanged();
 }
 const isTyping = () => { const a = document.activeElement; return a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable); };
@@ -779,7 +842,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); return; }
   if (e.key === 'Enter' && selected.size === 1) { e.preventDefault(); startEdit([...selected][0]); return; }
   if (MOBILE) return;
-  const map = { KeyC: ['card'], KeyT: ['text'], KeyN: ['note'], KeyR: ['callout', { variant: 'remark' }], KeyZ: ['zone'] };
+  const map = { KeyC: ['card'], KeyT: ['text'], KeyN: ['note'], KeyR: ['callout', { variant: 'remark' }], KeyK: ['callout', { variant: 'check' }], KeyZ: ['zone'] };
   if (map[e.code]) { e.preventDefault(); const [t, pr] = map[e.code]; const wp = viewCenterWorld(); createAt(t, t === 'zone' ? { x: wp.x - 40, y: wp.y - 30 } : wp, pr); return; }
   if (e.code === 'KeyI') { e.preventDefault(); askImage(viewCenterWorld()); }
 });
@@ -866,6 +929,11 @@ function renderFmt() {
     btn('↗', 'Открыть оригинал', () => window.open(first.src, '_blank', 'noopener')),
     btn('1:1', 'Исходные пропорции', () => { const el = itemEls.get(first.id)?.querySelector('img'); if (el && el.naturalWidth) applyAll(it => { it.h = Math.round(it.w * el.naturalHeight / el.naturalWidth); }); }),
   );
+  if (!MOBILE && list.some(it => it.type === 'card' && paraList(it.text).some(p => CHECK_RE.test(p))))
+    fmt.append(btn('🎲', 'Вынести проверки на поля (со стрелкой в нужный абзац)', () => {
+      commit(); const n = extractChecks(list.filter(it => it.type === 'card'), { measure: estH });
+      if (n) { dirty(); toast('Вынесено проверок: ' + n, 2000); } else { undoStack.pop(); updateUI(); toast('Все проверки уже вынесены', 2000); }
+    }));
   if (!MOBILE && alignPlan()) fmt.append(btn(ALIGN_ICON, 'Выровнять / центрировать', ev => showAlignMenu(ev.currentTarget)));
   if (TEXT_TYPES.has(first.type) || first.type === 'zone') fmt.append(btn('✎', 'Редактировать текст', () => startEdit(first.id)));
   fmt.append(btn('<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>', 'Удалить', deleteSelection));
@@ -876,6 +944,74 @@ function alignIcon(a) {
   return `<svg viewBox="0 0 24 24"><path d="${l}"/></svg>`;
 }
 function rebuildAdj() { adj.clear(); for (const e of edges.values()) adjAdd(e); }
+
+// ================= Проверки на полях: стрелка-указатель в абзац сцены =================
+// Абзацы текста карточки — куски, разделённые пустой строкой.
+function paraStarts(text) {
+  const res = [], re = /\n{2,}/g; let pos = 0, m;
+  text = String(text || '');
+  while ((m = re.exec(text))) { if (text.slice(pos, m.index).trim()) res.push(pos); pos = m.index + m[0].length; }
+  if (text.slice(pos).trim()) res.push(pos);
+  return res;
+}
+const paraList = text => String(text || '').split(/\n{2,}/).filter(p => p.trim());
+// Вертикальная середина первой строки каждого абзаца — в координатах карточки.
+function paraYFromEl(el, it, scale) {
+  const f = el.querySelector('.ctext'); const node = f && f.firstChild;
+  if (!node || node.nodeType !== 3 || !f.offsetHeight) return null;
+  const base = el.getBoundingClientRect().top, len = node.length;
+  return paraStarts(it.text).map(st => {
+    if (st >= len) return null;
+    const r = document.createRange(); r.setStart(node, st); r.setEnd(node, Math.min(st + 1, len));
+    const rc = r.getClientRects()[0] || r.getBoundingClientRect();
+    return rc ? (rc.top - base + rc.height / 2) / scale : null;
+  });
+}
+function anchorIndex(card, e) {
+  const ps = paraList(card.text);
+  if (e.anchorText) { const k = ps.findIndex(p => p.trim().startsWith(e.anchorText)); if (k >= 0) return k; }
+  return Math.max(0, Math.min(ps.length - 1, e.anchor | 0));
+}
+function pinGeo(a, b, e) {
+  const k = anchorIndex(b, e), py = b._paraY && b._paraY[k] != null ? b.y + b._paraY[k] : b.y + Math.min(b.h / 2, 40);
+  const acx = a.x + a.w / 2, left = acx < b.x + b.w / 2;
+  const p2x = left ? b.x : b.x + b.w, p1x = left ? a.x + a.w : a.x, p1y = a.y + Math.min(a.h / 2, 26);
+  const dx = Math.max(30, Math.abs(p2x - p1x) / 2) * (left ? 1 : -1);
+  return { d: `M${r1(p1x)},${r1(p1y)} C${r1(p1x + dx)},${r1(p1y)} ${r1(p2x - dx)},${r1(py)} ${r1(p2x)},${r1(py)}`, mx: 0, my: 0 };
+}
+// Абзац под курсором при отпускании стрелки на карточке.
+function paraAtPoint(card, clientX, clientY) {
+  let node = null, off = 0;
+  if (document.caretRangeFromPoint) { const r = document.caretRangeFromPoint(clientX, clientY); if (r) { node = r.startContainer; off = r.startOffset; } }
+  else if (document.caretPositionFromPoint) { const p = document.caretPositionFromPoint(clientX, clientY); if (p) { node = p.offsetNode; off = p.offset; } }
+  const el = itemEls.get(card.id), f = el && el.querySelector('.ctext');
+  if (!node || !f || !f.contains(node)) return null;
+  const starts = paraStarts(card.text); let k = 0;
+  for (let i = 0; i < starts.length; i++) if (off >= starts[i]) k = i;
+  return k;
+}
+const CHECK_RE = /^\s*(🎲|⚡|Проверка:|Спасбросок)/;
+// Вынести абзацы-проверки сцены на поля: блок слева на уровне абзаца + стрелка в этот абзац.
+function extractChecks(cards, opt = {}) {
+  const W = opt.width || 250, GAP = opt.gap || 70; let made = 0;
+  for (const c of cards) {
+    if (c.type !== 'card') continue;
+    const ps = paraList(c.text);
+    const have = new Set([...(adj.get(c.id) || [])].map(id => edges.get(id)).filter(e => e && e.kind === 'pin' && e.to === c.id).map(e => e.anchorText));
+    let py = opt.paraY ? opt.paraY(c) : (c._paraY || null), bottom = -Infinity;
+    ps.forEach((p, k) => {
+      if (!CHECK_RE.test(p)) return;
+      const anchorText = p.trim().slice(0, 40);
+      if (have.has(anchorText)) return;
+      const yWant = c.y + (py && py[k] != null ? py[k] : 30 + k * 40) - 22;
+      const it = addItem('callout', c.x - W - GAP, Math.max(yWant, bottom + 12), { variant: 'check', w: W, text: p.trim().replace(/^Проверка:\s*/, '🎲 ') });
+      it.h = opt.measure ? opt.measure(it) : 60; bottom = it.y + it.h;
+      const e = addEdge(it.id, c.id, ''); if (e) { e.kind = 'pin'; e.anchor = k; e.anchorText = anchorText; }
+      made++;
+    });
+  }
+  return made;
+}
 
 // ================= Выравнивание =================
 const ALIGN_ICON = '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg>';
@@ -1210,10 +1346,10 @@ function prepareBoard(d) {
   const eds = [];
   for (const e of d.edges || []) {
     if (!e) continue; const from = String(e.from), to = String(e.to);
-    if (ids.has(from) && ids.has(to) && from !== to) eds.push({ id: e.id ? String(e.id) : uid(), from, to, label: e.label ? String(e.label) : '' });
+    if (ids.has(from) && ids.has(to) && from !== to) eds.push({ id: e.id ? String(e.id) : uid(), from, to, label: e.label ? String(e.label) : '', ...(e.kind === 'pin' ? { kind: 'pin', anchor: +e.anchor || 0, anchorText: e.anchorText ? String(e.anchorText) : '' } : {}) });
   }
   const needs = list.some(i => typeof i.x !== 'number' || typeof i.y !== 'number');
-  if (needs) autoLayout(list, eds, d.layout === 'vertical' ? 'v' : 'h', d.groups || [], d.name, d.cardWidth);
+  if (needs) autoLayout(list, eds, d.layout === 'vertical' ? 'v' : 'h', d.groups || [], d.name, d.cardWidth, d.checksAside !== false);
   let z = 0;
   for (const it of list) { delete it.group; delete it.attach; it.z = it.type === 'zone' ? -1e6 + (++z) : ++z; }
   return { items: list, edges: eds };
@@ -1229,7 +1365,12 @@ function estH(it) {
   measureHost.append(el); const h = el.offsetHeight; el.remove();
   return h || 60;
 }
-function autoLayout(list, eds, dir, groupsMeta, name, cardWidth) {
+function measureParaY(it) {
+  estH(it); // создаёт измерительный контейнер
+  const full = { ...defaults(it.type), ...it }, el = makeEl(full); fill(el, full); el.style.transform = 'none';
+  measureHost.append(el); const r = paraYFromEl(el, full, 1); el.remove(); return r;
+}
+function autoLayout(list, eds, dir, groupsMeta, name, cardWidth, checksAside = true) {
   const W = clamp(+cardWidth || (dir === 'v' ? 400 : 250), 180, 700), byId = new Map(list.map(i => [i.id, i]));
   const cards = list.filter(i => i.type === 'card');
   const isCard = id => byId.get(id)?.type === 'card';
@@ -1255,6 +1396,15 @@ function autoLayout(list, eds, dir, groupsMeta, name, cardWidth) {
   }
   for (const it of list) if (it.type !== 'zone' && it.type !== 'text') { it.w = W; if (it.type === 'image') it.h = Math.round(W * 0.68); }
   const H = new Map(); const h = it => { if (!H.has(it.id)) H.set(it.id, estH(it)); return H.get(it.id); };
+  // проверки из текста сцены — отдельные блоки на полях со стрелкой в свой абзац
+  const CW = 250, CGAP = 70;
+  const checksOf = c => checksAside ? paraList(c.text).map((p, k) => [p, k]).filter(([p]) => CHECK_RE.test(p)) : [];
+  const makeChecks = c => checksOf(c).map(([p, k]) => {
+    const ch = { id: uid(), type: 'callout', ...defaults('callout'), variant: 'check', w: CW, text: p.trim().replace(/^Проверка:\s*/, '🎲 ') };
+    list.push(ch); eds.push({ id: uid(), from: ch.id, to: c.id, label: '', kind: 'pin', anchor: k, anchorText: p.trim().slice(0, 40) });
+    return [ch, k];
+  });
+  if (dir !== 'v') for (const c of cards) for (const [ch] of makeChecks(c)) { if (!sats.has(c.id)) sats.set(c.id, []); sats.get(c.id).unshift(ch); }
   const bands = ['']; for (const c of cards) { const g = grp(c.id); if (!bands.includes(g)) bands.push(g); }
   const bandOf = new Map(), placed = [];
   const order = new Map(list.map((it, i) => [it.id, i]));
@@ -1268,7 +1418,8 @@ function autoLayout(list, eds, dir, groupsMeta, name, cardWidth) {
       if (!nodes.length) continue;
       const laneBottom = [], laneOf = new Map();
       const hasSats = nodes.some(n => (sats.get(n.id) || []).length);
-      const pitch = hasSats ? W + SIDE + W + LG : W + LG;
+      const LEFT = nodes.some(n => checksOf(n).length) ? CW + CGAP : 0;
+      const pitch = LEFT + (hasSats ? W + SIDE + W + LG : W + LG);
       for (const n of nodes) {
         const ps = preds.get(n.id);
         let y = 0; for (const p of ps) if (bottom.has(p)) y = Math.max(y, bottom.get(p) + VG);
@@ -1286,13 +1437,22 @@ function autoLayout(list, eds, dir, groupsMeta, name, cardWidth) {
           L++;
         }
         laneOf.set(n.id, L);
-        n.x = bandX + L * pitch; n.y = y; placed.push(n); bandOf.set(n.id, b);
+        n.x = bandX + L * pitch + LEFT; n.y = y; placed.push(n); bandOf.set(n.id, b);
+        let cy = -Infinity;
+        const chk = makeChecks(n);
+        if (chk.length) {
+          const py = measureParaY(n);
+          for (const [ch, k] of chk) {
+            ch.x = n.x - CW - CGAP; ch.y = Math.max(y + (py && py[k] != null ? py[k] : 30) - 22, cy + 12);
+            cy = ch.y + h(ch); placed.push(ch); bandOf.set(ch.id, b);
+          }
+        }
         let sy = y;
         for (const s of sats.get(n.id) || []) { s.x = n.x + W + SIDE; s.y = sy; sy += h(s) + SG; placed.push(s); bandOf.set(s.id, b); }
-        const yy = Math.max(y + h(n), sy - SG);
+        const yy = Math.max(y + h(n), sy - SG, cy);
         laneBottom[L] = yy; bottom.set(n.id, y + h(n));
         // следующая сцена этой линии не должна заезжать на заметки справа
-        if (sy - SG > y + h(n)) laneBottom[L] = sy - SG;
+        if (Math.max(sy - SG, cy) > y + h(n)) laneBottom[L] = Math.max(sy - SG, cy);
       }
       bandX += (Math.max(...laneOf.values()) + 1) * pitch - LG + BANDGAP;
     }
@@ -1442,8 +1602,15 @@ function boardToDocx() {
   // ремарки, заметки, картинки — к ближайшей сцене
   const dist = (a, c) => Math.hypot(Math.max(0, c.x - (a.x + a.w), a.x - (c.x + c.w)), Math.max(0, c.y - (a.y + a.h), a.y - (c.y + c.h)));
   const satOf = new Map(), loose = [];
+  const pinOf = new Map([...edges.values()].filter(e => e.kind === 'pin').map(e => [e.from, e]));
   for (const o of others) {
     if (o === titleIt || (o.type === 'text' && !String(o.text || '').trim())) continue;
+    // проверка на полях, текст которой уже есть в сцене, — в документе не дублируем
+    if (o.type === 'callout' && pinOf.has(o.id)) {
+      const c = items.get(pinOf.get(o.id).to), core = String(o.text || '').replace(/^\s*(🎲|⚡)\s*/, '').trim().slice(0, 30);
+      if (c && core && String(c.text || '').includes(core)) continue;
+      if (c) { if (!satOf.has(c.id)) satOf.set(c.id, []); satOf.get(c.id).push(o); continue; }
+    }
     let best = null, bd = Infinity; for (const c of cards) { const d = dist(o, c); if (d < bd) { bd = d; best = c; } }
     if (best && bd < 420) { if (!satOf.has(best.id)) satOf.set(best.id, []); satOf.get(best.id).push(o); } else loose.push(o);
   }
@@ -1455,7 +1622,7 @@ function boardToDocx() {
   body += para(run('Плашки: ', { b: true, sz: 18, color: '505050' }) + run('реплика персонажа · заметка ДМ · проверка · механика боя · формат новеллы · служебная пометка · TODO · заметка с холста', { sz: 18, color: '505050' }));
   const satXml = o => {
     if (o.type === 'image') return para(run('🖼 Картинка: ', { b: true, color: '505050' }) + run(o.src || '', { color: '3D6FD1', u: true }), { plate: 'note' });
-    if (o.type === 'callout') { const v = o.variant === 'read' ? 'read' : o.variant === 'warn' ? 'warn' : 'dm'; const head = (CALLOUTS[o.variant] || CALLOUTS.remark).name;
+    if (o.type === 'callout') { const v = o.variant === 'read' ? 'read' : o.variant === 'warn' ? 'warn' : o.variant === 'check' ? 'check' : 'dm'; const head = (CALLOUTS[o.variant] || CALLOUTS.remark).name;
       const parts = String(o.text || '').split(/\n{2,}/);
       return para(run(head.toUpperCase(), { b: true, sz: 17, color: PLATE[v].border }), { plate: v, keep: true }) + parts.map(p => /^(🗣|▸|🎲|◆|\/\/|📝)/.test(p.trim()) ? blockXml(p) : para(run(p, { i: PLATE[v].i, color: PLATE[v].text }), { plate: v })).join(''); }
     if (o.type === 'note') return String(o.text || '').split(/\n{2,}/).map((p, k) => para(run(p, { b: k === 0 && p.length < 80 && p === p.toUpperCase(), color: PLATE.sticky.text }), { plate: 'sticky' })).join('');

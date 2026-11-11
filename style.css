@@ -350,3 +350,8 @@ body.mobile #fmt { left: 8px; transform: none; max-width: calc(100vw - 70px); }
 #saveTip p.warn::before { content: "!"; color: var(--danger); font-weight: 700; left: 7px; }
 #saveTip p b { color: var(--text); }
 #saveTip small { display: block; margin-top: 10px; font-size: 11.5px; opacity: .85; }
+
+/* Стрелки-указатели от проверок к абзацу сцены */
+#arrowPin path { fill: #3aa6a0; }
+.edge.pin .line { stroke: #3aa6a0; stroke-width: 2; stroke-dasharray: 7 5; }
+.edge.pin.sel .line { stroke: var(--accent); stroke-dasharray: none; }
