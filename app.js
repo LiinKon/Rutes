@@ -1388,7 +1388,10 @@ function blockXml(t) {
   t = t.trim(); if (!t) return '';
   let m;
   if ((m = t.match(/^🗣\s*([^:]{1,40}):\s*([\s\S]*)$/))) { const P = PLATE.speech; return para(run(m[1] + ': ', { b: true, color: P.name }) + run(m[2].replace(/^«|»$/g, ''), { i: true, color: P.text }), { plate: 'speech' }); }
-  if ((m = t.match(/^▸\s*(ДМ:\s*)?([\s\S]*)$/))) return para(run('▸  ' + m[2], { i: true, color: PLATE.dm.text }), { plate: 'dm' });
+  if ((m = t.match(/^(?:▸\s*)?ДМ:\s*([\s\S]*)$/)) || (m = t.match(/^▸\s*([\s\S]*)$/))) return para(run('▸  ' + m[1], { i: true, color: PLATE.dm.text }), { plate: 'dm' });
+  if ((m = t.match(/^Проверка:\s*([\s\S]*)$/))) t = '🎲 ' + m[1];
+  if ((m = t.match(/^Механика:\s*([\s\S]*)$/))) t = '◆ ' + m[1];
+  if ((m = t.match(/^(?:⚠\s*)?Важно:\s*([\s\S]*)$/))) return para(run('Важно: ', { b: true, color: PLATE.warn.text }) + run(m[1], { color: PLATE.warn.text }), { plate: 'warn' });
   if (/^(🎲|⚡)/.test(t)) return para(run(t, { b: true, color: PLATE.check.text }), { plate: 'check' });
   if (/^◆/.test(t)) return para(run(t, { color: PLATE.mech.text }), { plate: 'mech' });
   if (/^\/\//.test(t)) return para(run(t, { i: true, color: PLATE.note.text }), { plate: 'note' });
