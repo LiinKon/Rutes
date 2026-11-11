@@ -445,7 +445,7 @@ viewport.addEventListener('pointerdown', e => {
     return;
   }
   if (ptrs.size > 2) return;
-  if (e.pointerType === 'mouse' && e.button === 1) { G = { type: 'pan', start: p, vx0: view.x, vy0: view.y, moved: true }; viewport.classList.add('panning'); return; }
+  if (e.pointerType === 'mouse' && e.button === 1) { e.preventDefault(); G = { type: 'pan', start: p, last: p, mid: true, moved: true }; viewport.classList.add('panning'); return; }
   if (rmb) { G = { type: 'box', start: p, cur: p, add: e.shiftKey || e.ctrlKey }; return; } // зажатая ПКМ — рамка выделения
 
   const itemEl = t.closest('.item');
@@ -494,8 +494,13 @@ viewport.addEventListener('pointermove', e => {
     case 'edge': if (!far) return; G.type = 'pan'; // далее как панорама
     // falls through
     case 'pan':
-      if (far) G.moved = true;
-      if (G.moved) { viewport.classList.add('panning'); view.x = G.vx0 + dx; view.y = G.vy0 + dy; viewChanged(); }
+      // сдвигаем на приращение от прошлого кадра, а не от точки старта:
+      // если во время перетаскивания случайно провернулось колесо (масштаб), холст не прыгает
+      if (far && !G.moved) { G.moved = true; G.last = G.start; }
+      if (G.moved) {
+        const l = G.last || G.start;
+        viewport.classList.add('panning'); view.x += p.x - l.x; view.y += p.y - l.y; G.last = p; viewChanged();
+      }
       return;
     case 'move': {
       if (!G.moved) {
@@ -615,12 +620,19 @@ function drawSelbox() {
 }
 
 viewport.addEventListener('wheel', e => {
-  if (editing && editing.el.contains(e.target) && !e.ctrlKey) return;
+  if (editing && editing.el.contains(e.target) && !e.ctrlKey && !e.shiftKey) return;
   e.preventDefault();
+  if (G && G.mid) return; // пока холст тянут зажатым колесом — случайные прокрутки колеса игнорируем
+  const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? viewport.clientHeight : 1;
+  if (e.shiftKey && !e.ctrlKey) {
+    // Shift + колесо — прокрутка вверх/вниз (Windows при Shift отдаёт прокрутку как горизонтальную)
+    const d = (e.deltaY || e.deltaX) * k;
+    view.y -= d * 1.2; viewChanged(); return;
+  }
   const p = vpPoint(e);
-  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-  zoomAt(p.x, p.y, view.s * Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)));
+  zoomAt(p.x, p.y, view.s * Math.exp(-e.deltaY * k * (e.ctrlKey ? 0.01 : 0.0015)));
 }, { passive: false });
+viewport.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); }); // без автопрокрутки Windows по колесу
 
 window.addEventListener('resize', schedule);
 
