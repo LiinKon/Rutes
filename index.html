@@ -36,12 +36,14 @@
   <span class="sep"></span>
   <button class="tb" data-act="insert" title="Добавить"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
   <button class="tb" data-act="undo" title="Отменить (Ctrl+Z)"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
-  <button class="tb" data-act="redo" title="Повторить (Ctrl+Y)"><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
+  <button class="tb" data-act="redo" title="Повторить (Ctrl+Shift+Z)"><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
   <button class="tb" data-act="fit" title="Показать всё"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
   <button class="tb desk" data-act="boxmode" title="Выделение рамкой (или Shift + тянуть)"><svg viewBox="0 0 24 24"><path d="M4 4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M4 7V4" /></svg></button>
   <button class="tb" data-act="search" title="Поиск (Ctrl+F)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></button>
+  <button class="tb" id="winBtn" data-act="window" title="Открыть отдельным окном без панелей браузера"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M14 3h7v7M21 3l-8 8"/></svg></button>
+  <button class="tb" data-act="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg></button>
   <div id="searchBox" class="hidden"><input id="searchInput" placeholder="Поиск по доске…" autocomplete="off"><span id="searchCount"></span></div>
-  <span id="saveState" title="Автосохранение в браузере">Сохранено</span>
+  <span id="saveState">Сохранено</span>
 </header>
 
 <!-- Панель форматирования -->
@@ -62,27 +64,45 @@
   <div class="sbfoot">
     <button class="btn ghost" data-act="exportAll">Экспорт всего (.json)</button>
     <button class="btn ghost" data-act="importAll">Импорт из файла</button>
-    <details class="help">
-      <summary>Управление</summary>
-      <ul>
-        <li><b>Двойной клик</b> по пустому месту — меню вставки</li>
-        <li><b>Ctrl+V</b> ссылки на картинку — картинка на холсте</li>
-        <li><b>Двойной клик</b> по блоку — редактировать текст</li>
-        <li><b>Кружок справа</b> у блока — протянуть переход; отпустить на пустом месте — новая сцена</li>
-        <li><b>Уголок справа снизу</b> — размер</li>
-        <li><b>Зона</b> двигается за ярлык и тянет за собой всё, что внутри</li>
-        <li><b>Колесо / щипок</b> — масштаб, <b>тянуть фон</b> — перемещение</li>
-        <li><b>Shift + тянуть</b> — выделить рамкой</li>
-        <li>Клавиши: <b>C</b> сцена, <b>T</b> текст, <b>N</b> заметка, <b>R</b> ремарка, <b>Z</b> зона, <b>I</b> картинка, <b>Del</b> удалить, <b>Ctrl+D</b> дублировать, <b>Ctrl+Z / Y</b></li>
-      </ul>
-    </details>
+    <button class="btn ghost" data-act="aiGuide" title="Отдайте её любой нейросети вместе с документом сценария — она сделает файл для импорта">Инструкция для нейросети (.md)</button>
   </div>
 </aside>
 
+<!-- Справка: кнопка «i» справа внизу -->
+<button id="helpBtn" class="tb" data-act="help" title="Подсказки по управлению">i</button>
+<div id="help" class="hidden">
+  <b>Управление</b>
+  <ul id="helpDesk">
+    <li><b>Двойной клик</b> по пустому месту — меню вставки</li>
+    <li><b>Ctrl+V</b> ссылки на картинку — картинка на холсте</li>
+    <li><b>Двойной клик</b> по блоку — писать текст, <b>Esc</b> — закончить</li>
+    <li><b>Кружок справа</b> у блока — протянуть переход; отпустить на пустом месте — новая сцена</li>
+    <li><b>Уголок</b> у блока — размер; у зоны тянутся <b>все стороны и углы</b></li>
+    <li><b>Зона</b> двигается за ярлык и везёт всё, что внутри</li>
+    <li><b>Зажатая ПКМ</b> или <b>Shift + тянуть</b> — выделить рамкой</li>
+    <li><b>Колесо</b> — масштаб, <b>тянуть фон</b> — перемещение</li>
+    <li><b>Alt+C</b> — центрировать в зоне/блоке, <b>Alt+H / Alt+V</b> — по горизонтали / вертикали</li>
+    <li><b>C</b> сцена · <b>T</b> текст · <b>N</b> заметка · <b>R</b> ремарка · <b>Z</b> зона · <b>I</b> картинка</li>
+    <li><b>Del</b> удалить · <b>Ctrl+D</b> дублировать · <b>Ctrl+F</b> поиск</li>
+    <li><b>Ctrl+Z</b> отменить · <b>Ctrl+Shift+Z</b> повторить</li>
+  </ul>
+  <ul id="helpMob">
+    <li><b>Двойной тап</b> по пустому месту — добавить текст, заметку или ремарку</li>
+    <li><b>Двойной тап</b> по блоку — писать текст</li>
+    <li><b>Тап</b> по блоку — шрифт, размер, цвет, выравнивание внизу</li>
+    <li><b>Тянуть блок</b> — переместить, <b>тянуть фон</b> — сдвинуть холст</li>
+    <li><b>Два пальца</b> — масштаб</li>
+  </ul>
+</div>
+
+<div id="detached" class="hidden"><div><b>Доска открыта в отдельном окне</b>Чтобы правки не перезаписывали друг друга, эта вкладка на паузе.<br><button class="btn" data-act="reattach">Работать здесь</button></div></div>
+
+<div id="saveTip" class="hidden"></div>
 <div id="menu" class="hidden"></div>
 <div id="toast"></div>
-<input type="file" id="importFile" accept=".json,application/json" hidden>
+<input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
 
+<script src="ai-guide.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

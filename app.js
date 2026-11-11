@@ -146,6 +146,7 @@ function afterHistory() {
 }
 
 // ================= Сохранение =================
+let lastSavedAt = null;
 let saveTimer = null, contentChanged = false, saving = false, saveAgain = false;
 const saveState = $('#saveState');
 function setSaveState(t, cls) { saveState.textContent = t; saveState.className = cls || ''; }
@@ -162,14 +163,35 @@ async function saveNow() {
       const b = ws.boards.find(b => b.id === boardId); if (b) b.updated = Date.now();
       contentChanged = false; await saveWs();
     }
-    setSaveState(DB.db ? 'Сохранено' : 'Не сохраняется!', DB.db ? '' : 'err');
+    setSaveState(DB.db ? 'Сохранено' : 'Не сохраняется!', DB.db ? '' : 'err'); lastSavedAt = new Date();
+    bc?.postMessage({ type: 'saved', tab: TAB, board: boardId, ws: true });
   } catch (err) { setSaveState('Ошибка сохранения', 'err'); toast('Не удалось сохранить: ' + err.message); }
   saving = false;
   if (saveAgain) { saveAgain = false; saveNow(); }
 }
-const saveWs = () => DB.put('meta', ws);
-document.addEventListener('visibilitychange', () => { if (document.hidden) { if (editing) syncEditText(); saveNow(); } });
-window.addEventListener('pagehide', () => { if (editing) syncEditText(); saveNow(); });
+const saveWs = () => DB.put('meta', ws).then(() => bc?.postMessage({ type: 'saved', tab: TAB, ws: true }));
+const flush = () => { if (editing) syncEditText(); if (saveTimer || contentChanged) saveNow(); };
+document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
+window.addEventListener('pagehide', flush);
+
+// Несколько вкладок/окон: после сохранения сообщаем остальным, они подтягивают свежую версию.
+const bc = 'BroadcastChannel' in window ? new BroadcastChannel('razvilka') : null;
+const TAB = uid();
+let paused = false;
+if (bc) bc.onmessage = async ({ data }) => {
+  if (!data || data.tab === TAB || paused) return;
+  if (data.type === 'saved') {
+    if (data.ws) { const fresh = await DB.get('meta', 'ws'); if (fresh) { ws = fresh; ws.current = boardId; renderTree(); renderCrumb(); } }
+    if (data.board === boardId && !saveTimer && !editing && !G) {
+      const d = await DB.get('boards', boardId); if (!d) return;
+      loadData(d.items, d.edges);
+      for (const id of [...selected]) if (!items.has(id)) selected.delete(id);
+      if (selEdge && !edges.has(selEdge)) selEdge = null;
+      updateUI(); schedule();
+    }
+  }
+};
+function pause() { flush(); paused = true; boardId = null; $('#detached').classList.remove('hidden'); }
 
 // ================= Отрисовка =================
 let rq = false, lod = null;
@@ -180,7 +202,7 @@ function makeEl(it) {
   el.className = 'item ' + it.type; el.dataset.id = it.id;
   const ph = MOBILE ? 'Нажмите дважды, чтобы писать' : 'Двойной клик — писать';
   switch (it.type) {
-    case 'card': el.innerHTML = `<div class="ckind"></div><div class="ctitle" data-f="title" data-ph="Название сцены"></div><div class="ctext" data-f="text" data-ph="Описание, заметки ДМ…"></div>`; break;
+    case 'card': el.innerHTML = `<div class="ckind"></div><div class="ctitle" data-f="title" data-ph="Название сцены"></div><div class="ctext" data-f="text" data-ph="＋ описание, заметки ДМ…"></div>`; break;
     case 'text': el.innerHTML = `<div data-f="text" data-ph="Текст"></div>`; break;
     case 'note': el.innerHTML = `<div data-f="text" data-ph="Заметка"></div>`; break;
     case 'callout': el.innerHTML = `<div class="chead"></div><div data-f="text" data-ph="${ph}"></div>`; break;
@@ -192,7 +214,8 @@ function makeEl(it) {
       break;
   }
   if (LINKABLE.has(it.type)) el.insertAdjacentHTML('beforeend', '<div class="port" title="Потяните, чтобы создать переход"></div>');
-  el.insertAdjacentHTML('beforeend', '<div class="rs" title="Размер"></div>');
+  if (it.type === 'zone') el.insertAdjacentHTML('beforeend', ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'].map(d => `<div class="zh zh-${d}" data-h="${d}"></div>`).join(''));
+  else el.insertAdjacentHTML('beforeend', '<div class="rs" data-h="se" title="Размер"></div>');
   el._v = -1;
   return el;
 }
@@ -392,8 +415,9 @@ function isDoubleTap(p, key) {
 function canMove(it) { return !MOBILE || TEXT_TYPES.has(it.type); }
 
 viewport.addEventListener('pointerdown', e => {
-  if (e.pointerType === 'mouse' && e.button === 2) return;
   const t = e.target;
+  const rmb = e.pointerType === 'mouse' && e.button === 2;
+  if (rmb && (MOBILE || ptrs.size)) return;
   // клик внутри редактируемого текста — отдаём браузеру
   if (editing && editing.el.contains(t)) return;
   hideMenu(); hideSwatches();
@@ -409,23 +433,26 @@ viewport.addEventListener('pointerdown', e => {
   }
   if (ptrs.size > 2) return;
   if (e.pointerType === 'mouse' && e.button === 1) { G = { type: 'pan', start: p, vx0: view.x, vy0: view.y, moved: true }; viewport.classList.add('panning'); return; }
+  if (rmb) { G = { type: 'box', start: p, cur: p, add: e.shiftKey || e.ctrlKey }; return; } // зажатая ПКМ — рамка выделения
 
   const itemEl = t.closest('.item');
   const id = itemEl && itemEl.dataset.id, it = id && items.get(id);
   if (it && t.closest('.port')) { G = { type: 'link', from: id, start: p, pt: toWorld(p), over: null, moved: false }; return; }
-  if (it && t.closest('.rs')) {
+  const handle = it && t.closest('[data-h]');
+  if (handle) {
     commit();
-    G = { type: 'resize', it, start: p, w0: it.w, h0: it.h, ar: it.h / it.w };
+    G = { type: 'resize', it, dir: handle.dataset.h, start: p, x0: it.x, y0: it.y, w0: it.w, h0: it.h, ar: it.h / it.w };
     if (!selected.has(id)) { selected.clear(); selected.add(id); selEdge = null; selChanged(); }
     return;
   }
   if (it && (it.type !== 'zone' || t.closest('.zlabel'))) {
     if (MOBILE && !TEXT_TYPES.has(it.type)) { G = { type: 'pan', start: p, vx0: view.x, vy0: view.y, moved: false }; return; }
     selEdge = null;
+    const wasSel = selected.size === 1 && selected.has(id) && !(e.shiftKey || e.ctrlKey || e.metaKey);
     if (e.shiftKey || e.ctrlKey || e.metaKey) { selected.has(id) ? selected.delete(id) : selected.add(id); }
     else if (!selected.has(id)) { selected.clear(); selected.add(id); }
     selChanged();
-    G = { type: 'move', id, start: p, moved: false, field: t.closest('[data-f]')?.dataset.f || null };
+    G = { type: 'move', id, start: p, moved: false, wasSel, field: t.closest('[data-f]')?.dataset.f || null };
     return;
   }
   const edgeEl = !MOBILE && t.closest('.edge');
@@ -476,7 +503,14 @@ viewport.addEventListener('pointermove', e => {
     case 'resize': {
       const it = G.it, ddx = dx / view.s, ddy = dy / view.s;
       if (it.type === 'image') { it.w = Math.round(Math.max(40, G.w0 + ddx)); it.h = e.shiftKey ? Math.round(Math.max(30, G.h0 + ddy)) : Math.round(it.w * G.ar); }
-      else if (it.type === 'zone') { it.w = Math.round(Math.max(80, G.w0 + ddx)); it.h = Math.round(Math.max(60, G.h0 + ddy)); }
+      else if (it.type === 'zone') {
+        const d = G.dir; let x = G.x0, y = G.y0, w = G.w0, h = G.h0;
+        if (d.includes('e')) w = Math.max(80, G.w0 + ddx);
+        if (d.includes('w')) { w = Math.max(80, G.w0 - ddx); x = G.x0 + G.w0 - w; }
+        if (d.includes('s')) h = Math.max(60, G.h0 + ddy);
+        if (d.includes('n')) { h = Math.max(60, G.h0 - ddy); y = G.y0 + G.h0 - h; }
+        it.x = Math.round(x); it.y = Math.round(y); it.w = Math.round(w); it.h = Math.round(h);
+      }
       else { it.w = Math.round(Math.max(80, G.w0 + ddx)); }
       touch(it); schedule(); return;
     }
@@ -520,7 +554,7 @@ function onUp(e, cancelled) {
     case 'edge': selected.clear(); selEdge = g.id; selChanged(); break;
     case 'move':
       if (g.moved) dirty();
-      else if (isDoubleTap(p, g.id)) startEdit(g.id, g.field);
+      else if (isDoubleTap(p, g.id) || (g.wasSel && g.field)) startEdit(g.id, g.field); // второй клик по выделенному — писать
       break;
     case 'resize': dirty(); break;
     case 'link':
@@ -581,7 +615,7 @@ function startEdit(id, field) {
   const f = el.querySelector(`[data-f="${field}"]`); if (!f) return;
   f.contentEditable = plainOK ? 'plaintext-only' : 'true';
   el.classList.add('editing');
-  editing = { id, field, el: f, snap: snap(), before: it[field] || '' };
+  editing = { id, field, el: f, snap: snap(), before: it[field] || '', measure: true };
   const caretEnd = () => {
     if (!editing || editing.el !== f) return;
     f.focus();
@@ -728,11 +762,15 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { hideMenu(); hideSwatches(); if (typing) document.activeElement.blur(); else { selected.clear(); selEdge = null; selChanged(); } return; }
   if (typing) return;
   if (mod && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
-  if (mod && e.code === 'KeyY') { e.preventDefault(); redo(); return; }
   if (mod && e.code === 'KeyA') { e.preventDefault(); selected.clear(); for (const id of items.keys()) selected.add(id); selChanged(); return; }
   if (mod && e.code === 'KeyF') { e.preventDefault(); openSearch(); return; }
   if (mod && e.code === 'KeyD') { e.preventDefault(); duplicateSelection(); return; }
-  if (mod || e.altKey) return;
+  if (e.altKey && !mod && !MOBILE) {
+    const m = { KeyC: 'center', KeyH: 'hcenter', KeyV: 'vcenter' }[e.code];
+    if (m) { e.preventDefault(); doAlign(m); }
+    return;
+  }
+  if (mod) return;
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); return; }
   if (e.key === 'Enter' && selected.size === 1) { e.preventDefault(); startEdit([...selected][0]); return; }
   if (MOBILE) return;
@@ -809,7 +847,7 @@ function renderFmt() {
       btn('B', 'Жирный', () => applyAll(it => { it.bold = !t0.bold; }, onlyText), t0.bold ? 'on' : ''),
       btn('I', 'Курсив', () => applyAll(it => { it.italic = !t0.italic; }, onlyText), 'i ' + (t0.italic ? 'on' : '')),
       btn('U', 'Подчёркнутый', () => applyAll(it => { it.underline = !t0.underline; }, onlyText), 'u ' + (t0.underline ? 'on' : '')),
-      btn(`<span class="dot" style="background:${t0.color || (t0.type === 'note' ? '#1d1f24' : '#e6e8ec')}"></span>`, 'Цвет текста',
+      btn(`<span class="dot" style="background:${t0.color || (t0.type === 'note' ? '#1d1f24' : 'var(--text)')}"></span>`, 'Цвет текста',
         () => showSwatches(TEXT_COLORS, t0.color, c => applyAll(it => { it.color = c; }, onlyText))),
       ...['left', 'center', 'right'].map(a => btn(alignIcon(a), { left: 'Влево', center: 'По центру', right: 'Вправо' }[a],
         () => applyAll(it => { it.align = a; }, onlyText), t0.align === a ? 'on' : '')),
@@ -823,6 +861,7 @@ function renderFmt() {
     btn('↗', 'Открыть оригинал', () => window.open(first.src, '_blank', 'noopener')),
     btn('1:1', 'Исходные пропорции', () => { const el = itemEls.get(first.id)?.querySelector('img'); if (el && el.naturalWidth) applyAll(it => { it.h = Math.round(it.w * el.naturalHeight / el.naturalWidth); }); }),
   );
+  if (!MOBILE && alignPlan()) fmt.append(btn(ALIGN_ICON, 'Выровнять / центрировать', ev => showAlignMenu(ev.currentTarget)));
   if (TEXT_TYPES.has(first.type) || first.type === 'zone') fmt.append(btn('✎', 'Редактировать текст', () => startEdit(first.id)));
   fmt.append(btn('<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>', 'Удалить', deleteSelection));
   fmt.classList.remove('hidden');
@@ -833,7 +872,98 @@ function alignIcon(a) {
 }
 function rebuildAdj() { adj.clear(); for (const e of edges.values()) adjAdd(e); }
 
+// ================= Выравнивание =================
+const ALIGN_ICON = '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg>';
+const contains = (c, o) => o.x >= c.x && o.y >= c.y && o.x + o.w <= c.x + c.w && o.y + o.h <= c.y + c.h;
+const area = o => o.w * o.h;
+function refName(r) {
+  if (!r.id) return 'выделения';
+  if (r.type === 'zone') return `зоны «${r.label || 'без названия'}»`;
+  if (r.type === 'card') return `сцены «${r.title || 'без названия'}»`;
+  return { text: 'текста', note: 'заметки', callout: 'ремарки', image: 'картинки' }[r.type] || 'блока';
+}
+// Что двигаем и относительно чего:
+//  • один блок — внутри самой маленькой зоны/блока, в котором он целиком лежит;
+//  • несколько, и один из них вмещает остальные — относительно него (группа двигается целиком);
+//  • иначе — относительно общих границ выделения (каждый блок по отдельности).
+function alignPlan() {
+  const list = selItems(); if (!list.length) return null;
+  if (list.length === 1) {
+    const it = list[0];
+    let ref = null;
+    for (const c of items.values()) if (c !== it && contains(c, it) && (!ref || area(c) < area(ref))) ref = c;
+    return ref ? { ref, movers: [it], group: true, pad: 16 } : null;
+  }
+  const cont = list.filter(c => list.every(o => o === c || contains(c, o))).sort((a, b) => area(a) - area(b))[0];
+  if (cont) return { ref: cont, movers: list.filter(o => o !== cont), group: true, pad: 16 };
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const o of list) { x0 = Math.min(x0, o.x); y0 = Math.min(y0, o.y); x1 = Math.max(x1, o.x + o.w); y1 = Math.max(y1, o.y + o.h); }
+  return { ref: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, movers: list, group: false, pad: 0 };
+}
+function doAlign(mode) {
+  const plan = alignPlan(); if (!plan) return;
+  const { ref, movers, group, pad } = plan;
+  commit();
+  // зона при сдвиге тащит своё содержимое, как и при перетаскивании
+  const moveBy = (o, dx, dy) => {
+    if (o.type === 'zone') for (const c of items.values()) if (c !== o && !movers.includes(c) && contains(o, c)) { c.x = Math.round(c.x + dx); c.y = Math.round(c.y + dy); }
+    o.x = Math.round(o.x + dx); o.y = Math.round(o.y + dy);
+  };
+  const target = (b, m) => {
+    let dx = 0, dy = 0;
+    if (m === 'left') dx = ref.x + pad - b.x;
+    if (m === 'hcenter' || m === 'center') dx = ref.x + (ref.w - b.w) / 2 - b.x;
+    if (m === 'right') dx = ref.x + ref.w - pad - (b.x + b.w);
+    if (m === 'top') dy = ref.y + pad - b.y;
+    if (m === 'vcenter' || m === 'center') dy = ref.y + (ref.h - b.h) / 2 - b.y;
+    if (m === 'bottom') dy = ref.y + ref.h - pad - (b.y + b.h);
+    return [dx, dy];
+  };
+  if (mode === 'dist-h' || mode === 'dist-v') {
+    const hz = mode === 'dist-h', ms = [...movers].sort((a, b) => hz ? a.x - b.x : a.y - b.y);
+    const total = ms.reduce((s, o) => s + (hz ? o.w : o.h), 0);
+    const gap = ((hz ? ref.w : ref.h) - 2 * pad - total) / (ms.length - 1);
+    let pos = (hz ? ref.x : ref.y) + pad;
+    for (const o of ms) { moveBy(o, hz ? pos - o.x : 0, hz ? 0 : pos - o.y); pos += (hz ? o.w : o.h) + gap; }
+  } else if (group) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const o of movers) { x0 = Math.min(x0, o.x); y0 = Math.min(y0, o.y); x1 = Math.max(x1, o.x + o.w); y1 = Math.max(y1, o.y + o.h); }
+    const [dx, dy] = target({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, mode);
+    for (const o of movers) moveBy(o, dx, dy);
+  } else for (const o of movers) { const [dx, dy] = target(o, mode); moveBy(o, dx, dy); }
+  dirty();
+}
+function showAlignMenu(b) {
+  const plan = alignPlan(); if (!plan) return;
+  const r = b.getBoundingClientRect();
+  const opts = [
+    ['center', 'Центрировать', 'Alt+C'], ['hcenter', 'По центру по горизонтали', 'Alt+H'], ['vcenter', 'По центру по вертикали', 'Alt+V'],
+    ['left', 'По левому краю', ''], ['right', 'По правому краю', ''], ['top', 'По верхнему краю', ''], ['bottom', 'По нижнему краю', ''],
+  ];
+  const entries = opts.map(([m, label, key]) => ({ label, key, fn: () => doAlign(m) }));
+  if (plan.movers.length >= 3) entries.push({ label: 'Распределить по горизонтали', fn: () => doAlign('dist-h') }, { label: 'Распределить по вертикали', fn: () => doAlign('dist-v') });
+  showMenu(r.left, 0, entries, 'Относительно ' + refName(plan.ref));
+  const m = $('#menu'); m.style.top = Math.max(8, r.top - m.offsetHeight - 8) + 'px';
+}
+
+// ================= Тема =================
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $('meta[name="theme-color"]').content = t === 'light' ? '#f3f1ec' : '#14161b';
+  try { localStorage.setItem('razvilka.theme', t); } catch {}
+}
+function toggleTheme() { setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'); }
+{ let t = 'dark'; try { t = localStorage.getItem('razvilka.theme') || 'dark'; } catch {} setTheme(t); }
+
+// ================= Справка =================
+function toggleHelp(force) {
+  const h = $('#help'), show = force !== undefined ? force : h.classList.contains('hidden');
+  h.classList.toggle('hidden', !show); $('#helpBtn').classList.toggle('on', show);
+}
+if (MOBILE) $('#helpDesk').remove(); else $('#helpMob').remove();
+
 // ================= Общее обновление интерфейса =================
+
 function updateUI() {
   $('[data-act="undo"]').disabled = !undoStack.length;
   $('[data-act="redo"]').disabled = !redoStack.length;
@@ -1025,7 +1155,7 @@ async function exportAll() {
 }
 $('#importFile').addEventListener('change', async e => {
   const file = e.target.files[0]; e.target.value = ''; if (!file) return;
-  let d; try { d = JSON.parse(await file.text()); } catch { toast('Файл не читается как JSON'); return; }
+  let d; try { d = parseLoose(await file.text()); } catch { toast('Файл не читается как JSON'); return; }
   try {
     if (d.kind === 'workspace' && d.ws && Array.isArray(d.boards)) {
       // добавляем как отдельную папку, ничего не затирая
@@ -1041,12 +1171,168 @@ $('#importFile').addEventListener('change', async e => {
       await saveWs(); renderTree(); toast('Импортировано в папку «' + root.name + '»');
     } else if (Array.isArray(d.items)) {
       const id = uid(), cur = ws.boards.find(b => b.id === boardId);
-      ws.boards.push({ id, name: d.name || file.name.replace(/\.json$/i, ''), folder: cur ? cur.folder : null, updated: Date.now() });
-      await DB.put('boards', { id, items: d.items, edges: d.edges || [], view: null });
+      const prep = prepareBoard(d);
+      ws.boards.push({ id, name: d.name || file.name.replace(/\.(json|txt)$/i, ''), folder: cur ? cur.folder : null, updated: Date.now() });
+      await DB.put('boards', { id, items: prep.items, edges: prep.edges, view: null });
       await saveWs(); await openBoard(id); toast('Доска импортирована');
     } else toast('Это не файл Развилки');
   } catch (err) { toast('Ошибка импорта: ' + err.message); }
 });
+
+// ================= Импорт от нейросети: проверка и авторасстановка =================
+const NAMED_COLORS = { red: '#e05a5a', blue: '#5b8def', green: '#6cc070', yellow: '#f0c060', purple: '#a78bfa', orange: '#f08a5d', pink: '#e86fb0', gray: '#9aa1ad', grey: '#9aa1ad' };
+const KIND_ALIAS = { сцена: 'scene', выбор: 'choice', развилка: 'choice', бой: 'combat', диалог: 'dialog', проверка: 'check', награда: 'loot', концовка: 'ending', battle: 'combat', fight: 'combat', reward: 'loot', end: 'ending' };
+function parseLoose(text) {
+  try { return JSON.parse(text); } catch {}
+  const a = text.indexOf('{'), b = text.lastIndexOf('}'); // ответ нейросети с ```json и пояснениями вокруг
+  if (a >= 0 && b > a) return JSON.parse(text.slice(a, b + 1));
+  throw new Error('не JSON');
+}
+function prepareBoard(d) {
+  const list = [], ids = new Set();
+  for (const r of d.items || []) {
+    if (!r || typeof r !== 'object') continue;
+    const type = defaults(r.type) ? r.type : (r.title ? 'card' : 'note');
+    let id = r.id != null ? String(r.id) : uid(); if (ids.has(id)) id = uid(); ids.add(id);
+    const it = { ...r, id, type };
+    for (const k of ['title', 'text', 'label']) if (it[k] != null) it[k] = String(it[k]);
+    if (type === 'card') { const k = String(it.kind || 'scene').toLowerCase(); it.kind = KIND[k] ? k : KIND_ALIAS[k] || 'scene'; }
+    if (type === 'callout' && !CALLOUTS[it.variant]) it.variant = 'remark';
+    if (type === 'zone' && NAMED_COLORS[it.color]) it.color = NAMED_COLORS[it.color];
+    list.push(it);
+  }
+  const eds = [];
+  for (const e of d.edges || []) {
+    if (!e) continue; const from = String(e.from), to = String(e.to);
+    if (ids.has(from) && ids.has(to) && from !== to) eds.push({ id: e.id ? String(e.id) : uid(), from, to, label: e.label ? String(e.label) : '' });
+  }
+  const needs = list.some(i => typeof i.x !== 'number' || typeof i.y !== 'number');
+  if (needs) autoLayout(list, eds, d.layout === 'vertical' ? 'v' : 'h', d.groups || [], d.name);
+  let z = 0;
+  for (const it of list) { delete it.group; delete it.attach; it.z = it.type === 'zone' ? -1e6 + (++z) : ++z; }
+  return { items: list, edges: eds };
+}
+function estH(it) {
+  const lines = (s, per) => (s || '').split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / per)), 0);
+  if (it.type === 'card') return 34 + 21 * lines(it.title, 22) + (it.text ? 6 + 20 * lines(it.text, 32) : 0);
+  if (it.type === 'callout') return 40 + 20 * lines(it.text, 32);
+  if (it.type === 'note') return 30 + 20 * lines(it.text, 26);
+  if (it.type === 'image') return 170;
+  return 20 + 1.4 * (it.size || 18) * lines(it.text, 30);
+}
+function autoLayout(list, eds, dir, groupsMeta, name) {
+  const W = 250, byId = new Map(list.map(i => [i.id, i]));
+  const cards = list.filter(i => i.type === 'card');
+  const isCard = id => byId.get(id)?.type === 'card';
+  // ранги: длина самого длинного пути от начала (циклы разрываем)
+  const out = new Map(cards.map(c => [c.id, []]));
+  for (const e of eds) if (isCard(e.from) && isCard(e.to)) out.get(e.from).push(e.to);
+  const state = new Map(), keep = new Map(cards.map(c => [c.id, []]));
+  const dfs = u => { state.set(u, 1); for (const v of out.get(u)) { if (state.get(v) === 1) continue; keep.get(u).push(v); if (!state.get(v)) dfs(v); } state.set(u, 2); };
+  for (const c of cards) if (!state.get(c.id)) dfs(c.id);
+  const indeg = new Map(cards.map(c => [c.id, 0])); for (const vs of keep.values()) for (const v of vs) indeg.set(v, indeg.get(v) + 1);
+  const rank = new Map(cards.map(c => [c.id, 0])), queue = cards.filter(c => !indeg.get(c.id)).map(c => c.id);
+  while (queue.length) { const u = queue.shift(); for (const v of keep.get(u)) { rank.set(v, Math.max(rank.get(v), rank.get(u) + 1)); indeg.set(v, indeg.get(v) - 1); if (!indeg.get(v)) queue.push(v); } }
+  // полосы: общая линия, затем руты в порядке появления, в конце — заметки без привязки
+  const bands = [], bandOf = new Map(), slots = new Map(); // band -> Map(rank -> [items])
+  const band = name => { if (!slots.has(name)) { slots.set(name, new Map()); bands.push(name); } return slots.get(name); };
+  const put = (b, r, it) => { const m = band(b); if (!m.has(r)) m.set(r, []); m.get(r).push(it); bandOf.set(it.id, b); };
+  band('');
+  const sats = new Map(); const loose = [];
+  for (const it of list) if (it.type !== 'card' && it.type !== 'zone' && it.type !== 'text') {
+    if (it.attach && isCard(String(it.attach))) { const a = String(it.attach); if (!sats.has(a)) sats.set(a, []); sats.get(a).push(it); }
+    else loose.push(it);
+  }
+  for (const c of cards) { const b = c.group ? String(c.group) : ''; put(b, rank.get(c.id), c); for (const s of sats.get(c.id) || []) put(b, rank.get(c.id), s); }
+  loose.forEach((it, i) => put('__loose', i, it));
+  for (const it of list) if (it.type !== 'zone' && it.type !== 'text') { it.w = W; if (it.type === 'image') it.h = 170; }
+  const GAP = 110, ROW = 48, BAND = 120;
+  const placed = [];
+  if (dir === 'h') {
+    let y = 0;
+    for (const b of bands) {
+      const cols = slots.get(b); if (!cols.size) continue;
+      const rowH = [];
+      for (const col of cols.values()) col.forEach((it, i) => { rowH[i] = Math.max(rowH[i] || 0, estH(it)); });
+      for (const [r, col] of cols) { let yy = y; col.forEach((it, i) => { it.x = r * (W + GAP); it.y = yy; yy += rowH[i] + ROW; placed.push(it); }); }
+      y += rowH.reduce((a, h) => a + h + ROW, 0) - ROW + BAND;
+    }
+  } else {
+    const maxRank = Math.max(0, ...[...slots.values()].flatMap(m => [...m.keys()]));
+    const rowH = new Array(maxRank + 1).fill(0);
+    for (const m of slots.values()) for (const [r, col] of m) for (const it of col) rowH[r] = Math.max(rowH[r], estH(it));
+    const rowY = []; let acc = 0; for (let r = 0; r <= maxRank; r++) { rowY[r] = acc; acc += rowH[r] + 90; }
+    let x = 0;
+    for (const b of bands) {
+      const m = slots.get(b); if (!m.size) continue;
+      const width = Math.max(...[...m.values()].map(c => c.length));
+      for (const [r, col] of m) col.forEach((it, i) => { it.x = x + i * (W + 40); it.y = rowY[r]; placed.push(it); });
+      x += width * (W + 40) - 40 + BAND;
+    }
+  }
+  // зоны вокруг рут
+  const meta = new Map((groupsMeta || []).map(g => [String(g.name), g]));
+  let ci = 0;
+  for (const b of bands) {
+    if (!b || !slots.get(b).size) continue;
+    const its = placed.filter(i => bandOf.get(i.id) === b); if (!its.length) continue;
+    const x0 = Math.min(...its.map(i => i.x)) - 36, y0 = Math.min(...its.map(i => i.y)) - 44;
+    const x1 = Math.max(...its.map(i => i.x + i.w)) + 36, y1 = Math.max(...its.map(i => i.y + estH(i))) + 36;
+    const g = meta.get(b), named = g && (NAMED_COLORS[g.color] || (/^#/.test(g.color || '') && g.color));
+    list.push({ id: uid(), type: 'zone', ...defaults('zone'), x: x0, y: y0, w: x1 - x0, h: y1 - y0,
+      color: b === '__loose' ? '#9aa1ad' : named || ZONE_COLORS[[2, 0, 6, 1, 4, 5, 3][ci++ % 7]], label: b === '__loose' ? 'Без привязки' : b });
+  }
+  // заголовок и свободный текст — сверху
+  let top = Math.min(0, ...placed.map(i => i.y)) - 70;
+  const texts = list.filter(i => i.type === 'text' && (typeof i.x !== 'number' || typeof i.y !== 'number'));
+  if (name && !texts.length) { const t = { id: uid(), type: 'text', ...defaults('text'), text: String(name), size: 40, bold: true, font: 'serif', w: 900 }; list.push(t); texts.push(t); }
+  for (const t of texts.reverse()) { t.w = t.w || 900; top -= estH(t) + 10; t.x = 0; t.y = top; }
+}
+
+// ================= Отдельное окно =================
+// Лучший вариант — установить как приложение (Chrome, Edge, Яндекс): своё окно без адресной строки и вкладок,
+// размер и место окна браузер запоминает сам. Если установка недоступна — всплывающее окно того же размера.
+let installEvt = null;
+const STANDALONE = matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: window-controls-overlay)').matches || navigator.standalone === true;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
+window.addEventListener('appinstalled', () => { installEvt = null; toast('Установлено. Запускайте «Развилку» из меню Пуск или с рабочего стола.', 5000); });
+if (STANDALONE || MOBILE || new URLSearchParams(location.search).has('popup')) $('#winBtn').remove();
+async function openWindow() {
+  if (installEvt) {
+    installEvt.prompt();
+    const { outcome } = await installEvt.userChoice; installEvt = null;
+    if (outcome === 'accepted') return;
+  }
+  await saveNow();
+  const w = window.open(location.pathname + '?popup', 'razvilka-' + TAB,
+    `popup=yes,width=${Math.max(360, outerWidth)},height=${Math.max(480, outerHeight)},left=${screenX},top=${screenY}`);
+  if (!w) { toast('Браузер заблокировал окно — разрешите всплывающие окна для этого сайта.', 5000); return; }
+  pause();
+}
+
+// ================= Подсказка «где сохранено» =================
+const fmtBytes = n => n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + ' КБ' : (n / 1024 / 1024).toFixed(1) + ' МБ';
+async function showSaveTip() {
+  const tip = $('#saveTip'), r = saveState.getBoundingClientRect();
+  let usage = '', persisted = null;
+  try { const est = await navigator.storage.estimate(); usage = fmtBytes(est.usage || 0); } catch {}
+  try { persisted = await navigator.storage.persisted(); } catch {}
+  const t = lastSavedAt ? lastSavedAt.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : null;
+  tip.innerHTML = DB.db ? `
+    <b>Где хранятся данные</b>
+    <p class="ok">Сохранено <b>в этом браузере на этом устройстве</b>${t ? ', последний раз в ' + t : ''}. Каждое изменение записывается сразу.</p>
+    <p class="no">На сервер и в интернет ничего не отправляется. GitHub хранит только саму программу, не ваши доски.</p>
+    <p>Другие устройства и браузеры этих досок не видят. Чтобы перенести или сделать резервную копию — «Экспорт всего» в боковой панели.</p>
+    <p class="warn">Очистка истории / данных сайтов в браузере удалит доски.</p>
+    <small>${usage ? 'Занято: ' + usage + ' · ' : ''}${persisted === null ? '' : persisted ? 'браузер не будет чистить сам' : 'браузер может почистить при нехватке места'}</small>`
+    : `<b>Сохранение не работает</b><p class="warn">Хранилище браузера недоступно (например, режим инкогнито). Всё пропадёт при закрытии вкладки — сделайте «Экспорт всего».</p>`;
+  tip.classList.remove('hidden');
+  tip.style.left = Math.max(8, Math.min(r.left - 40, innerWidth - tip.offsetWidth - 8)) + 'px';
+  tip.style.top = (r.bottom + 14) + 'px';
+}
+saveState.addEventListener('mouseenter', showSaveTip);
+saveState.addEventListener('mouseleave', () => $('#saveTip').classList.add('hidden'));
+saveState.addEventListener('click', () => $('#saveTip').classList.contains('hidden') ? showSaveTip() : $('#saveTip').classList.add('hidden'));
 
 // ================= Кнопки =================
 const actions = {
@@ -1058,6 +1344,14 @@ const actions = {
   newFolder: () => newFolder(null),
   newBoard: () => newBoard(),
   exportAll, importAll: () => $('#importFile').click(),
+  aiGuide: () => {
+    const blob = new Blob([window.RAZVILKA_AI_GUIDE || ''], { type: 'text/markdown' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'Развилка — инструкция для нейросети.md';
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    toast('Отдайте нейросети этот файл и документ сценария. Её ответ сохраните как .json и загрузите через «Импорт из файла».', 7000);
+  },
+  theme: toggleTheme, help: () => toggleHelp(),
+  window: openWindow, reattach: () => location.reload(),
 };
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]'); if (!b || b.disabled) return;

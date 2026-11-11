@@ -1,6 +1,6 @@
 // Офлайн-кэш самого приложения (не данных — они в IndexedDB).
-const CACHE = 'razvilka-v1';
-const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'razvilka-v3';
+const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'ai-guide.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
