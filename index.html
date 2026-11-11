@@ -9,7 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 
@@ -63,6 +63,7 @@
   </div>
   <div id="tree"></div>
   <div class="sbfoot">
+    <button class="btn ghost" data-act="exportDocx" title="Текущая доска — в документ Word: сцены по порядку стрелок, руты разделами, плашки как в сценарии">Текущая доска → Word (.docx)</button>
     <button class="btn ghost" data-act="exportAll">Экспорт всего (.json)</button>
     <button class="btn ghost" data-act="importAll">Импорт из файла</button>
     <button class="btn ghost" data-act="aiGuide" title="Отдайте её любой нейросети вместе с документом сценария — она сделает файл для импорта">Инструкция для нейросети (.md)</button>
@@ -103,7 +104,7 @@
 <div id="toast"></div>
 <input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
 
-<script src="ai-guide.js?v=5"></script>
-<script src="app.js?v=5"></script>
+<script src="ai-guide.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

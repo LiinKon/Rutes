@@ -1067,6 +1067,7 @@ function boardMenu(b, ev) {
     { label: 'Переместить в…', fn: () => moveMenu(ev, null, p => { b.folder = p; }) },
     { label: 'Дублировать', fn: () => duplicateBoard(b) },
     { label: 'Экспорт доски (.json)', fn: () => exportBoard(b) },
+    { label: 'Экспорт в Word (.docx)', fn: async () => { if (b.id !== boardId) await openBoard(b.id); exportDocx(); } },
     { label: 'Удалить доску', danger: true, fn: () => deleteBoard(b) },
   ]);
 }
@@ -1207,86 +1208,287 @@ function prepareBoard(d) {
     if (ids.has(from) && ids.has(to) && from !== to) eds.push({ id: e.id ? String(e.id) : uid(), from, to, label: e.label ? String(e.label) : '' });
   }
   const needs = list.some(i => typeof i.x !== 'number' || typeof i.y !== 'number');
-  if (needs) autoLayout(list, eds, d.layout === 'vertical' ? 'v' : 'h', d.groups || [], d.name);
+  if (needs) autoLayout(list, eds, d.layout === 'vertical' ? 'v' : 'h', d.groups || [], d.name, d.cardWidth);
   let z = 0;
   for (const it of list) { delete it.group; delete it.attach; it.z = it.type === 'zone' ? -1e6 + (++z) : ++z; }
   return { items: list, edges: eds };
 }
+// Точная высота блока: собираем его во временном невидимом контейнере и меряем.
+let measureHost = null;
 function estH(it) {
-  const lines = (s, per) => (s || '').split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / per)), 0);
-  if (it.type === 'card') return 34 + 21 * lines(it.title, 22) + (it.text ? 6 + 20 * lines(it.text, 32) : 0);
-  if (it.type === 'callout') return 40 + 20 * lines(it.text, 32);
-  if (it.type === 'note') return 30 + 20 * lines(it.text, 26);
-  if (it.type === 'image') return 170;
-  return 20 + 1.4 * (it.size || 18) * lines(it.text, 30);
+  if (it.type === 'image') return it.h || 170;
+  if (it.type === 'zone') return it.h || 300;
+  if (!measureHost) { measureHost = document.createElement('div'); measureHost.style.cssText = 'position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none'; document.body.append(measureHost); }
+  const full = { ...defaults(it.type), ...it };
+  const el = makeEl(full); fill(el, full); el.style.transform = 'none';
+  measureHost.append(el); const h = el.offsetHeight; el.remove();
+  return h || 60;
 }
-function autoLayout(list, eds, dir, groupsMeta, name) {
-  const W = 250, byId = new Map(list.map(i => [i.id, i]));
+function autoLayout(list, eds, dir, groupsMeta, name, cardWidth) {
+  const W = clamp(+cardWidth || (dir === 'v' ? 400 : 250), 180, 700), byId = new Map(list.map(i => [i.id, i]));
   const cards = list.filter(i => i.type === 'card');
   const isCard = id => byId.get(id)?.type === 'card';
-  // ранги: длина самого длинного пути от начала (циклы разрываем)
-  const out = new Map(cards.map(c => [c.id, []]));
-  for (const e of eds) if (isCard(e.from) && isCard(e.to)) out.get(e.from).push(e.to);
+  const grp = id => String(byId.get(id)?.group || '');
+  // Для раскладки учитываем переходы внутри руты и из общей линии в руту.
+  // Переходы между разными рутами (например «срыв → бой») рисуются, но порядок не ломают.
+  const counted = e => isCard(e.from) && isCard(e.to) && (grp(e.from) === grp(e.to) || grp(e.from) === '');
+  const out = new Map(cards.map(c => [c.id, []])), preds = new Map(cards.map(c => [c.id, []]));
+  for (const e of eds) if (counted(e)) out.get(e.from).push(e.to);
+  // ранги — длина самого длинного пути (циклы разрываем)
   const state = new Map(), keep = new Map(cards.map(c => [c.id, []]));
   const dfs = u => { state.set(u, 1); for (const v of out.get(u)) { if (state.get(v) === 1) continue; keep.get(u).push(v); if (!state.get(v)) dfs(v); } state.set(u, 2); };
   for (const c of cards) if (!state.get(c.id)) dfs(c.id);
-  const indeg = new Map(cards.map(c => [c.id, 0])); for (const vs of keep.values()) for (const v of vs) indeg.set(v, indeg.get(v) + 1);
+  for (const [u, vs] of keep) for (const v of vs) preds.get(v).push(u);
+  const indeg = new Map(cards.map(c => [c.id, preds.get(c.id).length]));
   const rank = new Map(cards.map(c => [c.id, 0])), queue = cards.filter(c => !indeg.get(c.id)).map(c => c.id);
   while (queue.length) { const u = queue.shift(); for (const v of keep.get(u)) { rank.set(v, Math.max(rank.get(v), rank.get(u) + 1)); indeg.set(v, indeg.get(v) - 1); if (!indeg.get(v)) queue.push(v); } }
-  // полосы: общая линия, затем руты в порядке появления, в конце — заметки без привязки
-  const bands = [], bandOf = new Map(), slots = new Map(); // band -> Map(rank -> [items])
-  const band = name => { if (!slots.has(name)) { slots.set(name, new Map()); bands.push(name); } return slots.get(name); };
-  const put = (b, r, it) => { const m = band(b); if (!m.has(r)) m.set(r, []); m.get(r).push(it); bandOf.set(it.id, b); };
-  band('');
-  const sats = new Map(); const loose = [];
+  // спутники (ремарки, заметки) — к своей сцене; бесхозные — отдельно
+  const sats = new Map(), loose = [];
   for (const it of list) if (it.type !== 'card' && it.type !== 'zone' && it.type !== 'text') {
     if (it.attach && isCard(String(it.attach))) { const a = String(it.attach); if (!sats.has(a)) sats.set(a, []); sats.get(a).push(it); }
     else loose.push(it);
   }
-  for (const c of cards) { const b = c.group ? String(c.group) : ''; put(b, rank.get(c.id), c); for (const s of sats.get(c.id) || []) put(b, rank.get(c.id), s); }
-  loose.forEach((it, i) => put('__loose', i, it));
-  for (const it of list) if (it.type !== 'zone' && it.type !== 'text') { it.w = W; if (it.type === 'image') it.h = 170; }
-  const GAP = 110, ROW = 48, BAND = 120;
-  const placed = [];
-  if (dir === 'h') {
+  for (const it of list) if (it.type !== 'zone' && it.type !== 'text') { it.w = W; if (it.type === 'image') it.h = Math.round(W * 0.68); }
+  const H = new Map(); const h = it => { if (!H.has(it.id)) H.set(it.id, estH(it)); return H.get(it.id); };
+  const bands = ['']; for (const c of cards) { const g = grp(c.id); if (!bands.includes(g)) bands.push(g); }
+  const bandOf = new Map(), placed = [];
+  const order = new Map(list.map((it, i) => [it.id, i]));
+  const SG = 14;
+  if (dir === 'v') {
+    // Вертикально: каждая рута — свой столбец; ремарки и заметки сцены — справа от неё, стрелки идут чисто.
+    const LG = 70, VG = 64, BANDGAP = 130, SIDE = 24;
+    const bottom = new Map(); let bandX = 0;
+    for (const b of bands) {
+      const nodes = cards.filter(c => grp(c.id) === b).sort((p, q) => rank.get(p.id) - rank.get(q.id) || order.get(p.id) - order.get(q.id));
+      if (!nodes.length) continue;
+      const laneBottom = [], laneOf = new Map();
+      const hasSats = nodes.some(n => (sats.get(n.id) || []).length);
+      const pitch = hasSats ? W + SIDE + W + LG : W + LG;
+      for (const n of nodes) {
+        const ps = preds.get(n.id);
+        let y = 0; for (const p of ps) if (bottom.has(p)) y = Math.max(y, bottom.get(p) + VG);
+        const inBand = ps.filter(p => laneOf.has(p)).sort((p, q) => order.get(p) - order.get(q));
+        let L = inBand.length ? laneOf.get(inBand[0]) : 0;
+        while (laneBottom[L] !== undefined && laneBottom[L] + VG > y) {
+          // полоса занята: либо ниже в той же полосе (если это единственный путь), либо соседняя полоса
+          if (inBand.length && laneOf.get(inBand[0]) === L && keep.get(inBand[0]).filter(v => grp(v) === b).length === 1) { y = laneBottom[L] + VG; break; }
+          L++;
+        }
+        laneOf.set(n.id, L);
+        n.x = bandX + L * pitch; n.y = y; placed.push(n); bandOf.set(n.id, b);
+        let sy = y;
+        for (const s of sats.get(n.id) || []) { s.x = n.x + W + SIDE; s.y = sy; sy += h(s) + SG; placed.push(s); bandOf.set(s.id, b); }
+        const yy = Math.max(y + h(n), sy - SG);
+        laneBottom[L] = yy; bottom.set(n.id, y + h(n));
+        // следующая сцена этой линии не должна заезжать на заметки справа
+        if (sy - SG > y + h(n)) laneBottom[L] = sy - SG;
+      }
+      bandX += (Math.max(...laneOf.values()) + 1) * pitch - LG + BANDGAP;
+    }
+    let yy = 0;
+    for (const it of loose) { it.x = bandX; it.y = yy; yy += h(it) + SG + 10; placed.push(it); bandOf.set(it.id, '__loose'); }
+    if (loose.length) bands.push('__loose');
+  } else {
+    // Горизонтально: руты — полосами друг под другом.
+    const GAP = 110, ROW = 48, BAND = 130;
+    const slots = new Map();
+    const put = (b, r, it) => { if (!slots.has(b)) slots.set(b, new Map()); const m = slots.get(b); if (!m.has(r)) m.set(r, []); m.get(r).push(it); bandOf.set(it.id, b); };
+    for (const c of cards) { put(grp(c.id), rank.get(c.id), c); for (const s of sats.get(c.id) || []) put(grp(c.id), rank.get(c.id), s); }
+    loose.forEach((it, i) => put('__loose', i, it)); if (loose.length) bands.push('__loose');
     let y = 0;
     for (const b of bands) {
-      const cols = slots.get(b); if (!cols.size) continue;
+      const cols = slots.get(b); if (!cols || !cols.size) continue;
       const rowH = [];
-      for (const col of cols.values()) col.forEach((it, i) => { rowH[i] = Math.max(rowH[i] || 0, estH(it)); });
+      for (const col of cols.values()) col.forEach((it, i) => { rowH[i] = Math.max(rowH[i] || 0, h(it)); });
       for (const [r, col] of cols) { let yy = y; col.forEach((it, i) => { it.x = r * (W + GAP); it.y = yy; yy += rowH[i] + ROW; placed.push(it); }); }
-      y += rowH.reduce((a, h) => a + h + ROW, 0) - ROW + BAND;
-    }
-  } else {
-    const maxRank = Math.max(0, ...[...slots.values()].flatMap(m => [...m.keys()]));
-    const rowH = new Array(maxRank + 1).fill(0);
-    for (const m of slots.values()) for (const [r, col] of m) for (const it of col) rowH[r] = Math.max(rowH[r], estH(it));
-    const rowY = []; let acc = 0; for (let r = 0; r <= maxRank; r++) { rowY[r] = acc; acc += rowH[r] + 90; }
-    let x = 0;
-    for (const b of bands) {
-      const m = slots.get(b); if (!m.size) continue;
-      const width = Math.max(...[...m.values()].map(c => c.length));
-      for (const [r, col] of m) col.forEach((it, i) => { it.x = x + i * (W + 40); it.y = rowY[r]; placed.push(it); });
-      x += width * (W + 40) - 40 + BAND;
+      y += rowH.reduce((a, v) => a + v + ROW, 0) - ROW + BAND;
     }
   }
   // зоны вокруг рут
   const meta = new Map((groupsMeta || []).map(g => [String(g.name), g]));
   let ci = 0;
   for (const b of bands) {
-    if (!b || !slots.get(b).size) continue;
+    if (!b) continue;
     const its = placed.filter(i => bandOf.get(i.id) === b); if (!its.length) continue;
     const x0 = Math.min(...its.map(i => i.x)) - 36, y0 = Math.min(...its.map(i => i.y)) - 44;
-    const x1 = Math.max(...its.map(i => i.x + i.w)) + 36, y1 = Math.max(...its.map(i => i.y + estH(i))) + 36;
+    const x1 = Math.max(...its.map(i => i.x + i.w)) + 36, y1 = Math.max(...its.map(i => i.y + h(i))) + 36;
     const g = meta.get(b), named = g && (NAMED_COLORS[g.color] || (/^#/.test(g.color || '') && g.color));
     list.push({ id: uid(), type: 'zone', ...defaults('zone'), x: x0, y: y0, w: x1 - x0, h: y1 - y0,
       color: b === '__loose' ? '#9aa1ad' : named || ZONE_COLORS[[2, 0, 6, 1, 4, 5, 3][ci++ % 7]], label: b === '__loose' ? 'Без привязки' : b });
   }
   // заголовок и свободный текст — сверху
-  let top = Math.min(0, ...placed.map(i => i.y)) - 70;
+  let top = Math.min(0, ...placed.map(i => i.y)) - 80;
   const texts = list.filter(i => i.type === 'text' && (typeof i.x !== 'number' || typeof i.y !== 'number'));
   if (name && !texts.length) { const t = { id: uid(), type: 'text', ...defaults('text'), text: String(name), size: 40, bold: true, font: 'serif', w: 900 }; list.push(t); texts.push(t); }
-  for (const t of texts.reverse()) { t.w = t.w || 900; top -= estH(t) + 10; t.x = 0; t.y = top; }
+  for (const t of texts.reverse()) { t.w = t.w || 900; top -= h(t) + 10; t.x = 0; t.y = top; }
+}
+
+// ================= Экспорт доски в Word (.docx) =================
+// Собираем документ сами: .docx — это zip с XML внутри. Без библиотек и интернета.
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+function zipStore(files) { // files: [{name, text}] → Blob (zip без сжатия)
+  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), data = enc.encode(f.text), crc = crc32(data);
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true);
+    h.setUint32(14, crc, true); h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true);
+    parts.push(h, name, data);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true);
+    c.setUint32(16, crc, true); c.setUint32(20, data.length, true); c.setUint32(24, data.length, true); c.setUint16(28, name.length, true); c.setUint32(42, off, true);
+    central.push(c, name); off += 30 + name.length + data.length;
+  }
+  const csize = central.reduce((a, p) => a + p.byteLength, 0);
+  const e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, csize, true); e.setUint32(16, off, true);
+  return new Blob([...parts, ...central, e], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+}
+const xesc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// плашки — цвета как в исходном документе сценария
+const PLATE = {
+  speech: { fill: 'F5EFFB', border: '7A3FA8', name: '5A1E78', text: '1E1E1E', i: true },
+  dm:     { fill: 'E9F4EC', border: '2E8B57', text: '0E633B', i: true },
+  check:  { fill: 'FDECEC', border: 'C62828', text: 'B41E1E', b: true },
+  note:   { fill: 'F1F1F1', border: '8C8C8C', text: '505050', i: true },
+  vn:     { fill: '1E1B2E', border: '9B6BCC', text: 'A9A3B8', name: 'C9A6FF', speech: 'F2EEF8', i: true },
+  mech:   { fill: 'EDF1F8', border: '1F3864', text: '1E1E1E' },
+  todo:   { fill: 'FFF4DE', border: 'C58A1C', text: '85510B', i: true },
+  sticky: { fill: 'FFF7D1', border: 'D9B02F', text: '1E1E1E' },
+  read:   { fill: 'EAF1FD', border: '3D6FD1', text: '1E1E1E', i: true },
+  warn:   { fill: 'FDECEC', border: 'C62828', text: 'B41E1E' },
+};
+function run(text, o = {}) {
+  const pr = (o.b ? '<w:b/>' : '') + (o.i ? '<w:i/>' : '') + (o.u ? '<w:u w:val="single"/>' : '') + (o.color ? `<w:color w:val="${o.color}"/>` : '') + `<w:sz w:val="${o.sz || 21}"/>`;
+  return String(text).split('\n').map((ln, k) => (k ? `<w:r><w:rPr>${pr}</w:rPr><w:br/></w:r>` : '') + `<w:r><w:rPr>${pr}</w:rPr><w:t xml:space="preserve">${xesc(ln)}</w:t></w:r>`).join('');
+}
+function para(runs, o = {}) {
+  let pr = '';
+  if (o.style) pr += `<w:pStyle w:val="${o.style}"/>`;
+  if (o.keep) pr += '<w:keepNext/>';
+  if (o.plate) { const p = PLATE[o.plate]; pr += `<w:pBdr><w:left w:val="single" w:sz="24" w:space="10" w:color="${p.border}"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="${p.fill}"/><w:spacing w:before="100" w:after="100" w:line="276" w:lineRule="auto"/><w:ind w:left="240" w:right="240"/>`; }
+  else if (!o.style) pr += '<w:spacing w:before="0" w:after="160" w:line="300" w:lineRule="auto"/>';
+  if (o.align) pr += `<w:jc w:val="${o.align}"/>`;
+  return `<w:p><w:pPr>${pr}</w:pPr>${runs}</w:p>`;
+}
+// Абзац карточки → плашка по метке, которую ставит импорт (🗣, ▸ ДМ:, 🎲, ◆ …)
+function blockXml(t) {
+  t = t.trim(); if (!t) return '';
+  let m;
+  if ((m = t.match(/^🗣\s*([^:]{1,40}):\s*([\s\S]*)$/))) { const P = PLATE.speech; return para(run(m[1] + ': ', { b: true, color: P.name }) + run(m[2].replace(/^«|»$/g, ''), { i: true, color: P.text }), { plate: 'speech' }); }
+  if ((m = t.match(/^▸\s*(ДМ:\s*)?([\s\S]*)$/))) return para(run('▸  ' + m[2], { i: true, color: PLATE.dm.text }), { plate: 'dm' });
+  if (/^(🎲|⚡)/.test(t)) return para(run(t, { b: true, color: PLATE.check.text }), { plate: 'check' });
+  if (/^◆/.test(t)) return para(run(t, { color: PLATE.mech.text }), { plate: 'mech' });
+  if (/^\/\//.test(t)) return para(run(t, { i: true, color: PLATE.note.text }), { plate: 'note' });
+  if (/^📝/.test(t)) return para(run(t.replace(/^📝\s*/, ''), { i: true, color: PLATE.todo.text }), { plate: 'todo' });
+  if (/^\([\s\S]*\)$/.test(t)) return para(run(t.slice(1, -1), { i: true, color: PLATE.vn.text }), { plate: 'vn' });
+  if ((m = t.match(/^([А-ЯЁA-Z][а-яёa-z]{1,20}):\s+([\s\S]{1,300})$/)) && !t.includes('\n')) { const P = PLATE.vn; return para(run(m[1].toUpperCase() + '  ', { b: true, color: P.name }) + run(m[2], { color: P.speech }), { plate: 'vn' }); }
+  return para(run(t, { color: '1E1E1E' }));
+}
+const textXml = s => String(s || '').split(/\n{2,}/).map(blockXml).join('');
+
+function boardToDocx() {
+  const all = [...items.values()];
+  const cards = all.filter(i => i.type === 'card');
+  const zones = all.filter(i => i.type === 'zone');
+  const others = all.filter(i => i.type !== 'card' && i.type !== 'zone');
+  const area = z => z.w * z.h;
+  const zoneOf = c => { const cx = c.x + c.w / 2, cy = c.y + Math.min(c.h, 60) / 2; return zones.filter(z => cx >= z.x && cx <= z.x + z.w && cy >= z.y && cy <= z.y + z.h).sort((a, b) => area(a) - area(b))[0] || null; };
+  // заголовок — самый крупный свободный текст
+  const texts = others.filter(o => o.type === 'text').sort((a, b) => (b.size || 0) - (a.size || 0));
+  const titleIt = texts.length && (texts[0].size || 0) >= 24 ? texts[0] : null;
+  const b = ws.boards.find(x => x.id === boardId);
+  const title = titleIt ? titleIt.text : (b ? b.name : 'Доска');
+  // порядок: ранги по стрелкам, затем сверху вниз, слева направо
+  const out = new Map(cards.map(c => [c.id, []])), indeg = new Map(cards.map(c => [c.id, 0]));
+  for (const e of edges.values()) if (out.has(e.from) && out.has(e.to)) out.get(e.from).push(e.to);
+  const state = new Map(), keep = new Map(cards.map(c => [c.id, []]));
+  const dfs = u => { state.set(u, 1); for (const v of out.get(u)) { if (state.get(v) === 1) continue; keep.get(u).push(v); if (!state.get(v)) dfs(v); } state.set(u, 2); };
+  for (const c of [...cards].sort((p, q) => p.y - q.y || p.x - q.x)) if (!state.get(c.id)) dfs(c.id);
+  for (const vs of keep.values()) for (const v of vs) indeg.set(v, indeg.get(v) + 1);
+  const rank = new Map(cards.map(c => [c.id, 0])), q = cards.filter(c => !indeg.get(c.id)).map(c => c.id);
+  while (q.length) { const u = q.shift(); for (const v of keep.get(u)) { rank.set(v, Math.max(rank.get(v), rank.get(u) + 1)); indeg.set(v, indeg.get(v) - 1); if (!indeg.get(v)) q.push(v); } }
+  const byOrder = (p, r) => rank.get(p.id) - rank.get(r.id) || p.y - r.y || p.x - r.x;
+  // внутри руты — ветка целиком, потом следующая (а не вперемешку по уровням)
+  const branchOrder = cs => {
+    const ids = new Set(cs.map(c => c.id)), pend = new Map(cs.map(c => [c.id, 0]));
+    for (const c of cs) for (const v of keep.get(c.id)) if (ids.has(v)) pend.set(v, pend.get(v) + 1);
+    const res = [], stack = cs.filter(c => !pend.get(c.id)).sort(byOrder).reverse();
+    while (stack.length) {
+      const c = stack.pop(); res.push(c);
+      const kids = keep.get(c.id).filter(v => ids.has(v)).map(v => items.get(v)).sort((p, r) => p.x - r.x || p.y - r.y);
+      for (const k of kids.reverse()) { pend.set(k.id, pend.get(k.id) - 1); if (!pend.get(k.id)) stack.push(k); }
+    }
+    for (const c of cs.sort(byOrder)) if (!res.includes(c)) res.push(c);
+    return res;
+  };
+  const groups = new Map([[null, []]]); for (const z of [...zones].sort((p, r) => p.x - r.x || p.y - r.y)) groups.set(z, []);
+  for (const c of cards) groups.get(zoneOf(c)).push(c);
+  // ремарки, заметки, картинки — к ближайшей сцене
+  const dist = (a, c) => Math.hypot(Math.max(0, c.x - (a.x + a.w), a.x - (c.x + c.w)), Math.max(0, c.y - (a.y + a.h), a.y - (c.y + c.h)));
+  const satOf = new Map(), loose = [];
+  for (const o of others) {
+    if (o === titleIt || (o.type === 'text' && !String(o.text || '').trim())) continue;
+    let best = null, bd = Infinity; for (const c of cards) { const d = dist(o, c); if (d < bd) { bd = d; best = c; } }
+    if (best && bd < 420) { if (!satOf.has(best.id)) satOf.set(best.id, []); satOf.get(best.id).push(o); } else loose.push(o);
+  }
+  const cardTitle = c => (c.title || '').trim() || 'Без названия';
+  const where = new Map(); for (const [z, cs] of groups) for (const c of cs) where.set(c.id, z);
+  let body = '';
+  body += para(run(title, { b: true, sz: 48, color: '1F3864' }), { style: 'Title' });
+  body += para(run('Экспорт из «Развилки» · ' + new Date().toLocaleDateString('ru'), { i: true, sz: 18, color: '8C8C8C' }));
+  body += para(run('Плашки: ', { b: true, sz: 18, color: '505050' }) + run('реплика персонажа · заметка ДМ · проверка · механика боя · формат новеллы · служебная пометка · TODO · заметка с холста', { sz: 18, color: '505050' }));
+  const satXml = o => {
+    if (o.type === 'image') return para(run('🖼 Картинка: ', { b: true, color: '505050' }) + run(o.src || '', { color: '3D6FD1', u: true }), { plate: 'note' });
+    if (o.type === 'callout') { const v = o.variant === 'read' ? 'read' : o.variant === 'warn' ? 'warn' : 'dm'; const head = (CALLOUTS[o.variant] || CALLOUTS.remark).name;
+      const parts = String(o.text || '').split(/\n{2,}/);
+      return para(run(head.toUpperCase(), { b: true, sz: 17, color: PLATE[v].border }), { plate: v, keep: true }) + parts.map(p => /^(🗣|▸|🎲|◆|\/\/|📝)/.test(p.trim()) ? blockXml(p) : para(run(p, { i: PLATE[v].i, color: PLATE[v].text }), { plate: v })).join(''); }
+    if (o.type === 'note') return String(o.text || '').split(/\n{2,}/).map((p, k) => para(run(p, { b: k === 0 && p.length < 80 && p === p.toUpperCase(), color: PLATE.sticky.text }), { plate: 'sticky' })).join('');
+    return textXml(o.text);
+  };
+  const emitCard = c => {
+    const k = KIND[c.kind] || KINDS[0];
+    let x = para(run(cardTitle(c), { color: '1F3864' }) + run('   ' + k.name.toUpperCase(), { sz: 16, color: k.color.slice(1).toUpperCase(), b: true }), { style: 'Heading3', keep: true });
+    x += textXml(c.text);
+    for (const s of satOf.get(c.id) || []) x += satXml(s);
+    const outs = [...edges.values()].filter(e => e.from === c.id).map(e => ({ e, t: items.get(e.to) })).filter(o => o.t);
+    if (outs.length > 1 || outs.some(o => o.e.label || where.get(o.t.id) !== where.get(c.id))) {
+      x += para(run('Переходы:', { b: true, sz: 19, color: '505050' }), { keep: true });
+      for (const { e, t } of outs) {
+        const z = where.get(t.id), zn = z && z !== where.get(c.id) ? ` (${z.label || 'зона'})` : '';
+        x += para(run('→ ', { b: true, color: '1F3864' }) + (e.label ? run(e.label + ': ', { i: true, color: '505050' }) : '') + run(cardTitle(t) + zn, { b: true, color: '1F3864' }));
+      }
+    }
+    return x;
+  };
+  for (const [z, cs] of groups) {
+    if (!cs.length) continue;
+    if (z) body += para(run(z.label || 'Зона', { color: '1F3864' }), { style: 'Heading2', keep: true });
+    else if (groups.size > 1) body += para(run('Общая линия', { color: '1F3864' }), { style: 'Heading2', keep: true });
+    for (const c of branchOrder(cs)) body += emitCard(c);
+  }
+  if (loose.length) { body += para(run('Прочее', { color: '1F3864' }), { style: 'Heading2', keep: true }); for (const o of loose) body += satXml(o); }
+  const doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="709" w:footer="709" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+  const hs = (id, name, sz, before, color = '1F3864', lvl) => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="${before}" w:after="100"/>${lvl !== undefined ? `<w:outlineLvl w:val="${lvl}"/>` : ''}</w:pPr><w:rPr><w:b/><w:color w:val="${color}"/><w:sz w:val="${sz}"/></w:rPr></w:style>`;
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:cs="Segoe UI" w:eastAsia="Segoe UI"/><w:sz w:val="21"/><w:lang w:val="ru-RU"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>${hs('Title', 'Title', 48, 0)}${hs('Heading1', 'heading 1', 36, 360, '1F3864', 0)}${hs('Heading2', 'heading 2', 36, 520, '1F3864', 1)}${hs('Heading3', 'heading 3', 26, 300, '1F3864', 2)}</w:styles>`;
+  const files = [
+    { name: '[Content_Types].xml', text: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>' },
+    { name: '_rels/.rels', text: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>' },
+    { name: 'word/_rels/document.xml.rels', text: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+    { name: 'word/document.xml', text: doc },
+    { name: 'word/styles.xml', text: styles },
+  ];
+  return { blob: zipStore(files), name: (b ? b.name : title) };
+}
+async function exportDocx() {
+  stopEdit();
+  if (!items.size) { toast('Доска пустая — экспортировать нечего'); return; }
+  const { blob, name } = boardToDocx();
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = name.replace(/[\\/:*?"<>|]+/g, '_') + '.docx';
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  toast('Документ Word сохранён в загрузки');
 }
 
 // ================= Отдельное окно =================
@@ -1343,7 +1545,7 @@ const actions = {
   search: () => $('#searchBox').classList.contains('hidden') ? openSearch() : closeSearch(),
   newFolder: () => newFolder(null),
   newBoard: () => newBoard(),
-  exportAll, importAll: () => $('#importFile').click(),
+  exportAll, importAll: () => $('#importFile').click(), exportDocx,
   aiGuide: () => {
     const blob = new Blob([window.RAZVILKA_AI_GUIDE || ''], { type: 'text/markdown' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'Развилка — инструкция для нейросети.md';
@@ -1428,5 +1630,5 @@ function sampleBoard() {
   try { window.caches?.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(() => {}); } catch {}
 })();
 
-window.__razvilka = { items, edges, view, selected, fit }; // для отладки
+window.__razvilka = { items, edges, view, selected, fit, estH }; // для отладки
 })();
