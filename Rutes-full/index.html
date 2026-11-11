@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#14161b">
+<title>Развилка — схемы сценариев</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css?v=5">
+</head>
+<body>
+
+<div id="viewport">
+  <div id="world">
+    <div id="zoneLayer"></div>
+    <svg id="edges" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="arrowSel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <g id="edgeLayer"></g>
+      <path id="tempEdge" d="" marker-end="url(#arrowSel)"/>
+    </svg>
+    <div id="itemLayer"></div>
+  </div>
+  <div id="selbox" hidden></div>
+  <div id="empty" hidden>Дважды кликните по пустому месту, чтобы что-нибудь добавить.<br>Ссылку на картинку можно просто вставить: Ctrl+V.</div>
+</div>
+
+<!-- Верхняя панель -->
+<header id="toolbar">
+  <button class="tb" data-act="sidebar" title="Папки и доски"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+  <button id="crumb" class="crumb" data-act="sidebar"></button>
+  <span class="sep"></span>
+  <button class="tb" data-act="insert" title="Добавить"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button class="tb" data-act="undo" title="Отменить (Ctrl+Z)"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+  <button class="tb" data-act="redo" title="Повторить (Ctrl+Shift+Z)"><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
+  <button class="tb" data-act="fit" title="Показать всё"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
+  <button class="tb desk" data-act="boxmode" title="Выделение рамкой (или Shift + тянуть)"><svg viewBox="0 0 24 24"><path d="M4 4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M4 7V4" /></svg></button>
+  <button class="tb" data-act="search" title="Поиск (Ctrl+F)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></button>
+  <button class="tb" id="winBtn" data-act="window" title="Открыть отдельным окном без панелей браузера"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M14 3h7v7M21 3l-8 8"/></svg></button>
+  <button class="tb" data-act="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg></button>
+  <div id="searchBox" class="hidden"><input id="searchInput" placeholder="Поиск по доске…" autocomplete="off"><span id="searchCount"></span></div>
+  <span id="saveState">Сохранено</span>
+</header>
+
+<!-- Панель форматирования -->
+<div id="fmt" class="hidden"></div>
+<div id="swatches" class="hidden"></div>
+
+<!-- Боковая панель: папки и доски -->
+<aside id="sidebar" class="hidden">
+  <div class="sbhead">
+    <b>Кампания</b>
+    <button class="tb sm" data-act="sidebar" title="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
+  <div class="sbactions">
+    <button class="btn" data-act="newFolder">＋ Папка</button>
+    <button class="btn" data-act="newBoard">＋ Доска</button>
+  </div>
+  <div id="tree"></div>
+  <div class="sbfoot">
+    <button class="btn ghost" data-act="exportAll">Экспорт всего (.json)</button>
+    <button class="btn ghost" data-act="importAll">Импорт из файла</button>
+    <button class="btn ghost" data-act="aiGuide" title="Отдайте её любой нейросети вместе с документом сценария — она сделает файл для импорта">Инструкция для нейросети (.md)</button>
+  </div>
+</aside>
+
+<!-- Справка: кнопка «i» справа внизу -->
+<button id="helpBtn" class="tb" data-act="help" title="Подсказки по управлению">i</button>
+<div id="help" class="hidden">
+  <b>Управление</b>
+  <ul id="helpDesk">
+    <li><b>Двойной клик</b> по пустому месту — меню вставки</li>
+    <li><b>Ctrl+V</b> ссылки на картинку — картинка на холсте</li>
+    <li><b>Двойной клик</b> по блоку — писать текст, <b>Esc</b> — закончить</li>
+    <li><b>Кружок справа</b> у блока — протянуть переход; отпустить на пустом месте — новая сцена</li>
+    <li><b>Уголок</b> у блока — размер; у зоны тянутся <b>все стороны и углы</b></li>
+    <li><b>Зона</b> двигается за ярлык и везёт всё, что внутри</li>
+    <li><b>Зажатая ПКМ</b> или <b>Shift + тянуть</b> — выделить рамкой</li>
+    <li><b>Колесо</b> — масштаб, <b>тянуть фон</b> — перемещение</li>
+    <li><b>Alt+C</b> — центрировать в зоне/блоке, <b>Alt+H / Alt+V</b> — по горизонтали / вертикали</li>
+    <li><b>C</b> сцена · <b>T</b> текст · <b>N</b> заметка · <b>R</b> ремарка · <b>Z</b> зона · <b>I</b> картинка</li>
+    <li><b>Del</b> удалить · <b>Ctrl+D</b> дублировать · <b>Ctrl+F</b> поиск</li>
+    <li><b>Ctrl+Z</b> отменить · <b>Ctrl+Shift+Z</b> повторить</li>
+  </ul>
+  <ul id="helpMob">
+    <li><b>Двойной тап</b> по пустому месту — добавить текст, заметку или ремарку</li>
+    <li><b>Двойной тап</b> по блоку — писать текст</li>
+    <li><b>Тап</b> по блоку — шрифт, размер, цвет, выравнивание внизу</li>
+    <li><b>Тянуть блок</b> — переместить, <b>тянуть фон</b> — сдвинуть холст</li>
+    <li><b>Два пальца</b> — масштаб</li>
+  </ul>
+</div>
+
+<div id="detached" class="hidden"><div><b>Доска открыта в отдельном окне</b>Чтобы правки не перезаписывали друг друга, эта вкладка на паузе.<br><button class="btn" data-act="reattach">Работать здесь</button></div></div>
+
+<div id="saveTip" class="hidden"></div>
+<div id="menu" class="hidden"></div>
+<div id="toast"></div>
+<input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
+
+<script src="ai-guide.js?v=5"></script>
+<script src="app.js?v=5"></script>
+</body>
+</html>
