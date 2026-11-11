@@ -1423,7 +1423,9 @@ function sampleBoard() {
   const start = ws.boards.find(b => b.id === ws.current) ? ws.current : ws.boards[0]?.id;
   if (start) await openBoard(start); else await newBoard(null, 'Новая доска');
   if (!MOBILE && innerWidth > 1200) toggleSidebar(true);
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Кэш приложения не используется: снимаем старый service worker и его кэш, если остались от прошлых версий.
+  try { navigator.serviceWorker?.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(() => {}); } catch {}
+  try { window.caches?.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(() => {}); } catch {}
 })();
 
 window.__razvilka = { items, edges, view, selected, fit }; // для отладки
