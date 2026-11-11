@@ -158,13 +158,18 @@ async function saveNow() {
   if (saving) { saveAgain = true; return; }
   saving = true;
   try {
-    await DB.put('boards', { id: boardId, items: [...items.values()].map(clean), edges: [...edges.values()], view: { ...view } });
-    if (contentChanged) {
+    const content = contentChanged; contentChanged = false;
+    if (content) {
+      await DB.put('boards', { id: boardId, items: [...items.values()].map(clean), edges: [...edges.values()], view: { ...view } });
       const b = ws.boards.find(b => b.id === boardId); if (b) b.updated = Date.now();
-      contentChanged = false; await saveWs();
+      await saveWs();
+      bc?.postMessage({ type: 'saved', tab: TAB, board: boardId });
+    } else {
+      // сдвинули или приблизили холст — пишем только вид, чтобы не затереть правки из другого окна
+      const cur = await DB.get('boards', boardId);
+      if (cur) { cur.view = { ...view }; await DB.put('boards', cur); }
     }
     setSaveState(DB.db ? 'Сохранено' : 'Не сохраняется!', DB.db ? '' : 'err'); lastSavedAt = new Date();
-    bc?.postMessage({ type: 'saved', tab: TAB, board: boardId, ws: true });
   } catch (err) { setSaveState('Ошибка сохранения', 'err'); toast('Не удалось сохранить: ' + err.message); }
   saving = false;
   if (saveAgain) { saveAgain = false; saveNow(); }
@@ -1268,10 +1273,16 @@ function autoLayout(list, eds, dir, groupsMeta, name, cardWidth) {
         const ps = preds.get(n.id);
         let y = 0; for (const p of ps) if (bottom.has(p)) y = Math.max(y, bottom.get(p) + VG);
         const inBand = ps.filter(p => laneOf.has(p)).sort((p, q) => order.get(p) - order.get(q));
-        let L = inBand.length ? laneOf.get(inBand[0]) : 0;
+        // основное продолжение (самая «дальняя» ветка) остаётся в полосе родителя, боковые ответвления — правее
+        let L = 0, mainChild = false;
+        if (inBand.length) {
+          const par = inBand[0];
+          const kids = keep.get(par).filter(v => grp(v) === b).sort((u, v) => rank.get(v) - rank.get(u) || order.get(u) - order.get(v));
+          mainChild = kids[0] === n.id;
+          L = laneOf.get(par) + (mainChild ? 0 : 1);
+        }
         while (laneBottom[L] !== undefined && laneBottom[L] + VG > y) {
-          // полоса занята: либо ниже в той же полосе (если это единственный путь), либо соседняя полоса
-          if (inBand.length && laneOf.get(inBand[0]) === L && keep.get(inBand[0]).filter(v => grp(v) === b).length === 1) { y = laneBottom[L] + VG; break; }
+          if (mainChild && inBand.length && L === laneOf.get(inBand[0])) { y = laneBottom[L] + VG; break; }
           L++;
         }
         laneOf.set(n.id, L);
@@ -1496,20 +1507,20 @@ async function exportDocx() {
 // размер и место окна браузер запоминает сам. Если установка недоступна — всплывающее окно того же размера.
 let installEvt = null;
 const STANDALONE = matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: window-controls-overlay)').matches || navigator.standalone === true;
-window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#installBtn')?.classList.remove('hidden'); });
 window.addEventListener('appinstalled', () => { installEvt = null; toast('Установлено. Запускайте «Развилку» из меню Пуск или с рабочего стола.', 5000); });
 if (STANDALONE || MOBILE || new URLSearchParams(location.search).has('popup')) $('#winBtn').remove();
 async function openWindow() {
-  if (installEvt) {
-    installEvt.prompt();
-    const { outcome } = await installEvt.userChoice; installEvt = null;
-    if (outcome === 'accepted') return;
-  }
   await saveNow();
   const w = window.open(location.pathname + '?popup', 'razvilka-' + TAB,
-    `popup=yes,width=${Math.max(360, outerWidth)},height=${Math.max(480, outerHeight)},left=${screenX},top=${screenY}`);
+    `popup=yes,width=${Math.max(360, Math.round(outerWidth * 0.5))},height=${Math.max(480, outerHeight)},left=${screenX + Math.round(outerWidth * 0.5)},top=${screenY}`);
   if (!w) { toast('Браузер заблокировал окно — разрешите всплывающие окна для этого сайта.', 5000); return; }
-  pause();
+  toast('Окно открыто. Эта вкладка остаётся — правки из окна появятся здесь сами.', 4500);
+}
+async function installApp() {
+  if (!installEvt) { toast('Установка недоступна: откройте сайт в Chrome, Edge или Яндекс.Браузере, либо приложение уже установлено.', 5000); return; }
+  installEvt.prompt();
+  await installEvt.userChoice; installEvt = null; $('#installBtn')?.classList.add('hidden');
 }
 
 // ================= Подсказка «где сохранено» =================
@@ -1553,7 +1564,7 @@ const actions = {
     toast('Отдайте нейросети этот файл и документ сценария. Её ответ сохраните как .json и загрузите через «Импорт из файла».', 7000);
   },
   theme: toggleTheme, help: () => toggleHelp(),
-  window: openWindow, reattach: () => location.reload(),
+  window: openWindow, install: installApp, reattach: () => location.reload(),
 };
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]'); if (!b || b.disabled) return;

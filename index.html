@@ -9,7 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 
@@ -41,7 +41,7 @@
   <button class="tb" data-act="fit" title="Показать всё"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
   <button class="tb desk" data-act="boxmode" title="Выделение рамкой (или Shift + тянуть)"><svg viewBox="0 0 24 24"><path d="M4 4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M4 7V4" /></svg></button>
   <button class="tb" data-act="search" title="Поиск (Ctrl+F)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></button>
-  <button class="tb" id="winBtn" data-act="window" title="Открыть отдельным окном без панелей браузера"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M14 3h7v7M21 3l-8 8"/></svg></button>
+  <button class="tb" id="winBtn" data-act="window" title="Открыть в отдельном окне (вкладка останется, изменения синхронизируются)"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M14 3h7v7M21 3l-8 8"/></svg></button>
   <button class="tb" data-act="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg></button>
   <div id="searchBox" class="hidden"><input id="searchInput" placeholder="Поиск по доске…" autocomplete="off"><span id="searchCount"></span></div>
   <span id="saveState">Сохранено</span>
@@ -66,6 +66,7 @@
     <button class="btn ghost" data-act="exportDocx" title="Текущая доска — в документ Word: сцены по порядку стрелок, руты разделами, плашки как в сценарии">Текущая доска → Word (.docx)</button>
     <button class="btn ghost" data-act="exportAll">Экспорт всего (.json)</button>
     <button class="btn ghost" data-act="importAll">Импорт из файла</button>
+    <button class="btn ghost hidden" id="installBtn" data-act="install" title="Отдельное приложение: своё окно без вкладок и адресной строки, запуск из Пуска">Установить как приложение</button>
     <button class="btn ghost" data-act="aiGuide" title="Отдайте её любой нейросети вместе с документом сценария — она сделает файл для импорта">Инструкция для нейросети (.md)</button>
   </div>
 </aside>
@@ -104,7 +105,7 @@
 <div id="toast"></div>
 <input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
 
-<script src="ai-guide.js?v=7"></script>
-<script src="app.js?v=7"></script>
+<script src="ai-guide.js?v=9"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>
