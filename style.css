@@ -355,3 +355,28 @@ body.mobile #fmt { left: 8px; transform: none; max-width: calc(100vw - 70px); }
 #arrowPin path { fill: #3aa6a0; }
 .edge.pin .line { stroke: #3aa6a0; stroke-width: 2; stroke-dasharray: 7 5; }
 .edge.pin.sel .line { stroke: var(--accent); stroke-dasharray: none; }
+
+/* Окошко рядом с кнопкой */
+.pop {
+  position: fixed; z-index: 45; width: 300px; padding: 14px; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 14px 40px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.08);
+  opacity: 0; transform: translateX(-6px); transition: opacity .12s, transform .12s;
+}
+.pop.from-top { transform: translateY(-6px); }
+.pop.show { opacity: 1; transform: none; }
+.pop-arrow { position: absolute; width: 14px; height: 14px; background: var(--panel); transform: rotate(45deg); }
+.pop.from-left .pop-arrow { left: -8px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.pop.from-top .pop-arrow { top: -8px; border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
+.pop-title { font-weight: 650; font-size: 15px; margin-bottom: 10px; }
+.pop-msg { color: var(--muted); font-size: 13px; margin: -4px 0 10px; line-height: 1.45; }
+.pop-input { width: 100%; height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); font-size: 15px; outline: none; }
+.pop-input:focus { border-color: var(--accent); }
+.pop-input.bad { border-color: var(--danger); }
+.pop-lab { display: block; margin-top: 10px; color: var(--muted); font-size: 12px; }
+.pop-lab .pop-input { margin-top: 4px; }
+.pop-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.pop-btns .btn { text-align: center; min-width: 88px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+body.mobile .pop { width: min(300px, calc(100vw - 16px)); }

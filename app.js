@@ -718,8 +718,9 @@ function showInsertMenu(p, wp) {
 
 // ================= Картинки по ссылке =================
 function askImage(wp) {
-  const url = prompt('Ссылка на картинку (адрес изображения):');
-  if (url) addImageFromUrl(url.trim(), wp);
+  popAsk({ anchor: lastPointer ? { left: lastPointer.x, right: lastPointer.x, top: lastPointer.y, bottom: lastPointer.y, width: 0, height: 0 } : null,
+    title: 'Картинка по ссылке', placeholder: 'https://… — адрес изображения', ok: 'Вставить',
+    message: 'Правой кнопкой по картинке → «Копировать адрес изображения»' }).then(r => { if (r) addImageFromUrl(r.value, wp); });
 }
 function addImageFromUrl(url, wp) {
   if (/^data:image\//i.test(url)) { toast('Это встроенная картинка, а не ссылка. Откройте картинку крупно или на сайте-источнике и скопируйте её адрес.'); return; }
@@ -1205,23 +1206,87 @@ function row(depth, icon, name, cur, onClick, onMore) {
   r.querySelector('.more').addEventListener('click', e => { e.stopPropagation(); onMore(e); });
   return r;
 }
+// ================= Своё окошко рядом с кнопкой (вместо браузерных prompt/confirm) =================
+let popClose = null;
+function anchorRect(a) { if (!a) return null; if (a.getBoundingClientRect) return a.getBoundingClientRect(); return a; }
+// opt: { anchor, title, message, value, placeholder, ok, danger, where: { value, exclude }, input: false }
+function popAsk(opt) {
+  if (popClose) popClose(null);
+  return new Promise(resolve => {
+    const pop = document.createElement('div'); pop.className = 'pop';
+    const head = document.createElement('div'); head.className = 'pop-title'; head.textContent = opt.title || ''; pop.append(head);
+    if (opt.message) { const m = document.createElement('div'); m.className = 'pop-msg'; m.textContent = opt.message; pop.append(m); }
+    let inp = null, sel = null;
+    if (opt.input !== false) {
+      inp = document.createElement('input'); inp.className = 'pop-input'; inp.value = opt.value || ''; inp.placeholder = opt.placeholder || '';
+      inp.spellcheck = false; pop.append(inp);
+    }
+    if (opt.where) {
+      const lab = document.createElement('label'); lab.className = 'pop-lab'; lab.textContent = 'Где создать';
+      sel = document.createElement('select'); sel.className = 'pop-input';
+      sel.add(new Option('⌂ Корень (без папки)', ''));
+      for (const f of [...ws.folders].sort((a, b) => boardPath({ folder: a.id }).join('/').localeCompare(boardPath({ folder: b.id }).join('/'), 'ru'))) {
+        if (opt.where.exclude && isInside(f.id, opt.where.exclude)) continue;
+        sel.add(new Option('📁 ' + boardPath({ folder: f.id }).join(' / '), f.id, false, f.id === opt.where.value));
+      }
+      lab.append(sel); pop.append(lab);
+    }
+    const row = document.createElement('div'); row.className = 'pop-btns';
+    const cancel = document.createElement('button'); cancel.className = 'btn ghost'; cancel.textContent = 'Отмена';
+    const ok = document.createElement('button'); ok.className = 'btn ' + (opt.danger ? 'danger' : 'primary'); ok.textContent = opt.ok || 'Готово';
+    row.append(cancel, ok); pop.append(row);
+    const arrow = document.createElement('div'); arrow.className = 'pop-arrow'; pop.append(arrow);
+    document.body.append(pop);
+    // позиция: справа от того, откуда вызвали; если не влезает — снизу
+    const r = anchorRect(opt.anchor) || { left: innerWidth / 2 - 150, right: innerWidth / 2 - 150, top: 120, bottom: 120, height: 0, width: 0 };
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let x = r.right + 14, y = r.top + r.height / 2 - 28, side = 'left';
+    if (x + pw > innerWidth - 8) { x = Math.max(8, Math.min(r.left, innerWidth - pw - 8)); y = r.bottom + 12; side = 'top'; }
+    y = clamp(y, 8, innerHeight - ph - 8);
+    pop.style.left = x + 'px'; pop.style.top = y + 'px'; pop.classList.add('from-' + side);
+    if (side === 'left') arrow.style.top = clamp(r.top + r.height / 2 - y - 7, 12, ph - 26) + 'px';
+    else arrow.style.left = clamp(r.left + r.width / 2 - x - 7, 12, pw - 26) + 'px';
+    requestAnimationFrame(() => pop.classList.add('show'));
+    const done = v => {
+      if (!pop.isConnected) return;
+      pop.remove(); document.removeEventListener('pointerdown', outside, true); popClose = null; resolve(v);
+    };
+    const submit = () => {
+      const v = inp ? inp.value.trim() : true;
+      if (inp && !v) { inp.classList.add('bad'); inp.focus(); return; }
+      done({ value: v, folder: sel ? (sel.value || null) : undefined });
+    };
+    const outside = e => { if (!pop.contains(e.target)) done(null); };
+    setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+    pop.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); } });
+    ok.addEventListener('click', submit); cancel.addEventListener('click', () => done(null));
+    popClose = done;
+    setTimeout(() => { if (inp) { inp.focus(); inp.select(); } else ok.focus(); }, 30);
+  });
+}
+// окошко от кнопок боковой панели — сразу за её правым краем, на уровне кнопки
+const sideAnchor = el => { const r = el.getBoundingClientRect(), sb = sidebar.getBoundingClientRect(); return { left: r.left, right: Math.max(r.right, sb.right - 4), top: r.top, bottom: r.bottom, width: r.width, height: r.height }; };
+const rowOf = ev => { const el = ev && ev.target && ev.target.closest ? (ev.target.closest('.row') || ev.target) : null; return el && sidebar.contains(el) ? sideAnchor(el) : el; };
+
 function folderMenu(f, ev) {
+  const at = rowOf(ev);
   showMenu(ev.clientX, ev.clientY, [
-    { label: 'Новая доска здесь', fn: () => newBoard(f.id) },
-    { label: 'Новая папка внутри', fn: () => newFolder(f.id) },
-    { label: 'Переименовать', fn: () => { const n = prompt('Название папки', f.name); if (n && n.trim()) { f.name = n.trim(); saveWs(); renderTree(); renderCrumb(); } } },
+    { label: 'Новая доска здесь', fn: () => newBoard(f.id, undefined, at) },
+    { label: 'Новая папка внутри', fn: () => newFolder(f.id, at) },
+    { label: 'Переименовать', fn: async () => { const r = await popAsk({ anchor: at, title: 'Переименовать папку', value: f.name, ok: 'Сохранить' }); if (r) { f.name = r.value; saveWs(); renderTree(); renderCrumb(); } } },
     { label: 'Переместить в…', fn: () => moveMenu(ev, f.id, p => { f.parent = p; }) },
-    { label: 'Удалить папку', danger: true, fn: () => deleteFolder(f) },
+    { label: 'Удалить папку', danger: true, fn: () => deleteFolder(f, at) },
   ]);
 }
 function boardMenu(b, ev) {
+  const at = rowOf(ev);
   showMenu(ev.clientX, ev.clientY, [
-    { label: 'Переименовать', fn: () => { const n = prompt('Название доски', b.name); if (n && n.trim()) { b.name = n.trim(); saveWs(); renderTree(); renderCrumb(); } } },
+    { label: 'Переименовать', fn: async () => { const r = await popAsk({ anchor: at, title: 'Переименовать доску', value: b.name, ok: 'Сохранить' }); if (r) { b.name = r.value; saveWs(); renderTree(); renderCrumb(); } } },
     { label: 'Переместить в…', fn: () => moveMenu(ev, null, p => { b.folder = p; }) },
     { label: 'Дублировать', fn: () => duplicateBoard(b) },
     { label: 'Экспорт доски (.json)', fn: () => exportBoard(b) },
     { label: 'Экспорт в Word (.docx)', fn: async () => { if (b.id !== boardId) await openBoard(b.id); exportDocx(); } },
-    { label: 'Удалить доску', danger: true, fn: () => deleteBoard(b) },
+    { label: 'Удалить доску', danger: true, fn: () => deleteBoard(b, at) },
   ]);
 }
 function isInside(folderId, maybeParent) { let f = ws.folders.find(x => x.id === folderId); while (f) { if (f.id === maybeParent) return true; f = ws.folders.find(x => x.id === f.parent); } return false; }
@@ -1233,15 +1298,20 @@ function moveMenu(ev, selfFolder, apply) {
   }
   setTimeout(() => showMenu(ev.clientX, ev.clientY, opts, 'Куда переместить'), 0);
 }
-function newFolder(parent = null) {
-  const n = prompt('Название папки', 'Новая папка'); if (!n || !n.trim()) return;
-  ws.folders.push({ id: uid(), name: n.trim(), parent, open: true });
+async function newFolder(parent = null, anchor) {
+  const r = await popAsk({ anchor, title: 'Новая папка', value: 'Новая папка', placeholder: 'Например: Партия 2', ok: 'Создать', where: { value: parent } });
+  if (!r) return; parent = r.folder;
+  ws.folders.push({ id: uid(), name: r.value, parent, open: true });
   if (parent) { const p = ws.folders.find(f => f.id === parent); if (p) p.open = true; }
   saveWs(); renderTree();
 }
-async function newBoard(folder = undefined, name) {
+async function newBoard(folder = undefined, name, anchor) {
   if (folder === undefined) { const cur = ws.boards.find(b => b.id === boardId); folder = cur ? cur.folder : null; }
-  name = name || prompt('Название доски', 'Новая доска'); if (!name || !name.trim()) return;
+  if (!name) {
+    const r = await popAsk({ anchor, title: 'Новая доска', value: 'Новая доска', placeholder: 'Например: Сценарий, Карта связей', ok: 'Создать', where: { value: folder } });
+    if (!r) return; name = r.value; folder = r.folder;
+  }
+  if (!name || !name.trim()) return;
   const id = uid();
   ws.boards.push({ id, name: name.trim(), folder, updated: Date.now() });
   await DB.put('boards', { id, items: [], edges: [], view: null });
@@ -1254,8 +1324,8 @@ async function duplicateBoard(b) {
   ws.boards.push({ id, name: b.name + ' (копия)', folder: b.folder, updated: Date.now() });
   await DB.put('boards', { ...d, id }); await saveWs(); renderTree();
 }
-async function deleteBoard(b) {
-  if (!confirm(`Удалить доску «${b.name}»? Отменить это будет нельзя.`)) return;
+async function deleteBoard(b, anchor) {
+  if (!await popAsk({ anchor, title: 'Удалить доску?', message: `«${b.name}» удалится вместе со всем содержимым. Отменить это будет нельзя.`, input: false, ok: 'Удалить', danger: true })) return;
   ws.boards = ws.boards.filter(x => x.id !== b.id); await DB.del('boards', b.id);
   if (b.id === boardId) {
     boardId = null;
@@ -1263,11 +1333,11 @@ async function deleteBoard(b) {
   }
   await saveWs(); renderTree();
 }
-async function deleteFolder(f) {
+async function deleteFolder(f, anchor) {
   const ids = new Set([f.id]); let grew = true;
   while (grew) { grew = false; for (const x of ws.folders) if (x.parent && ids.has(x.parent) && !ids.has(x.id)) { ids.add(x.id); grew = true; } }
   const boards = ws.boards.filter(b => ids.has(b.folder));
-  if (!confirm(boards.length ? `Удалить папку «${f.name}» вместе с досками (${boards.length})? Отменить будет нельзя.` : `Удалить пустую папку «${f.name}»?`)) return;
+  if (!await popAsk({ anchor, title: 'Удалить папку?', message: boards.length ? `«${f.name}» удалится вместе с досками внутри (${boards.length}). Отменить это будет нельзя.` : `Папка «${f.name}» пустая.`, input: false, ok: 'Удалить', danger: true })) return;
   for (const b of boards) await DB.del('boards', b.id);
   ws.boards = ws.boards.filter(b => !ids.has(b.folder)); ws.folders = ws.folders.filter(x => !ids.has(x.id));
   if (!ws.boards.find(b => b.id === boardId)) { boardId = null; if (ws.boards.length) await openBoard(ws.boards[0].id); else await newBoard(null, 'Новая доска'); }
@@ -1736,8 +1806,8 @@ const actions = {
   undo, redo, fit,
   boxmode: () => { boxMode = !boxMode; updateUI(); toast(boxMode ? 'Режим рамки: тяните по пустому месту, чтобы выделить' : 'Режим рамки выключен', 1800); },
   search: () => $('#searchBox').classList.contains('hidden') ? openSearch() : closeSearch(),
-  newFolder: () => newFolder(null),
-  newBoard: () => newBoard(),
+  newFolder: b => newFolder(null, sideAnchor(b)),
+  newBoard: b => newBoard(undefined, undefined, sideAnchor(b)),
   exportAll, importAll: () => $('#importFile').click(), exportDocx,
   aiGuide: () => {
     const blob = new Blob([window.RAZVILKA_AI_GUIDE || ''], { type: 'text/markdown' });
