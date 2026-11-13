@@ -34,6 +34,13 @@ const LINKABLE = new Set(['card', 'text', 'note', 'callout', 'image']);
 const MIN_S = 0.08, MAX_S = 3;
 const MOBILE = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820;
 if (MOBILE) document.body.classList.add('mobile');
+// приложение для ПК (Tauri) — см. раздел «Приложение для ПК» ниже
+const DESKTOP = !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+const tauriInvoke = (cmd, args) => (window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__.invoke)(cmd, args);
+if (DESKTOP) document.body.classList.add('desktop');
+const BK_KEY = 'razvilka.backupDir';
+let backupDir = ''; try { backupDir = DESKTOP ? localStorage.getItem(BK_KEY) || '' : ''; } catch {}
+let backupTimer = null, lastBackupAt = null;
 
 const $ = (s, r = document) => r.querySelector(s);
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -166,6 +173,7 @@ async function saveNow() {
       const b = ws.boards.find(b => b.id === boardId); if (b) b.updated = Date.now();
       await saveWs();
       bc?.postMessage({ type: 'saved', tab: TAB, board: boardId });
+      scheduleBackup();
     } else {
       // сдвинули или приблизили холст — пишем только вид, чтобы не затереть правки из другого окна
       const cur = await DB.get('boards', boardId);
@@ -939,7 +947,7 @@ function renderFmt() {
   if (allType('zone')) fmt.append(btn(`<span class="dot" style="background:${first.color}"></span>`, 'Цвет зоны',
     () => showSwatches(ZONE_COLORS, first.color, c => applyAll(it => { it.color = c; }, it => it.type === 'zone'))));
   if (allType('image') && list.length === 1) fmt.append(
-    btn('↗', 'Открыть оригинал', () => window.open(first.src, '_blank', 'noopener')),
+    btn('↗', 'Открыть оригинал', () => openExternal(first.src)),
     btn('1:1', 'Исходные пропорции', () => { const el = itemEls.get(first.id)?.querySelector('img'); if (el && el.naturalWidth) applyAll(it => { it.h = Math.round(it.w * el.naturalHeight / el.naturalWidth); }); }),
   );
   if (!MOBILE && list.some(it => it.type === 'card' && paraList(it.text).some(p => CHECK_RE.test(p))))
@@ -1362,10 +1370,7 @@ function toggleSidebar(force) {
 
 // ================= Экспорт / импорт =================
 function download(name, obj) {
-  const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = name.replace(/[\\/:*?"<>|]+/g, '_') + '.json';
-  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  return saveBlob(name, new Blob([JSON.stringify(obj)], { type: 'application/json' }), 'json', 'Развилка (JSON)');
 }
 async function exportBoard(b) {
   if (b.id === boardId) await saveNow();
@@ -1379,7 +1384,12 @@ async function exportAll() {
 }
 $('#importFile').addEventListener('change', async e => {
   const file = e.target.files[0]; e.target.value = ''; if (!file) return;
-  let d; try { d = parseLoose(await file.text()); } catch { toast('Файл не читается как JSON'); return; }
+  let d; try { d = parseLoose(await file.text()); } catch { importMode = 'add'; toast('Файл не читается как JSON'); return; }
+  if (importMode === 'restore') {
+    importMode = 'add';
+    if (d.kind === 'workspace' && d.ws && Array.isArray(d.boards)) return restoreWorkspace(d);
+    toast('Это не резервная копия всей кампании (нужен файл «Развилка — кампания.json» или «бэкап»)', 6000); return;
+  }
   try {
     if (d.kind === 'workspace' && d.ws && Array.isArray(d.boards)) {
       // добавляем как отдельную папку, ничего не затирая
@@ -1748,10 +1758,7 @@ async function exportDocx() {
   stopEdit();
   if (!items.size) { toast('Доска пустая — экспортировать нечего'); return; }
   const { blob, name } = boardToDocx();
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = name.replace(/[\\/:*?"<>|]+/g, '_') + '.docx';
-  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
-  toast('Документ Word сохранён в загрузки');
+  if (await saveBlob(name, blob, 'docx', 'Документ Word') && !DESKTOP) toast('Документ Word сохранён в загрузки');
 }
 
 // ================= Отдельное окно =================
@@ -1761,7 +1768,7 @@ let installEvt = null;
 const STANDALONE = matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: window-controls-overlay)').matches || navigator.standalone === true;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#installBtn')?.classList.remove('hidden'); });
 window.addEventListener('appinstalled', () => { installEvt = null; toast('Установлено. Запускайте «Развилку» из меню Пуск или с рабочего стола.', 5000); });
-if (STANDALONE || MOBILE || new URLSearchParams(location.search).has('popup')) $('#winBtn').remove();
+if (STANDALONE || MOBILE || DESKTOP || new URLSearchParams(location.search).has('popup')) $('#winBtn').remove();
 async function openWindow() {
   await saveNow();
   const w = window.open(location.pathname + '?popup', 'razvilka-' + TAB,
@@ -1783,7 +1790,15 @@ async function showSaveTip() {
   try { const est = await navigator.storage.estimate(); usage = fmtBytes(est.usage || 0); } catch {}
   try { persisted = await navigator.storage.persisted(); } catch {}
   const t = lastSavedAt ? lastSavedAt.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : null;
-  tip.innerHTML = DB.db ? `
+  tip.innerHTML = DESKTOP && DB.db ? `
+    <b>Где хранятся данные</b>
+    <p class="ok">Сохранено <b>в приложении на этом компьютере</b>${t ? ', последний раз в ' + t : ''}. Каждое изменение записывается сразу.</p>
+    <p class="no">В интернет ничего не отправляется.</p>
+    ${backupDir ? `<p class="ok">Резервные копии всей кампании: <b>${xesc(backupDir)}</b>${lastBackupAt ? ', последняя в ' + lastBackupAt.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }) : ''}. Хранятся копии за 14 последних дней.</p>`
+      : `<p class="warn">Резервные копии выключены. Включите их внизу боковой панели — тогда кампания будет ещё и лежать файлом в выбранной папке.</p>`}
+    <p>Доски приложения и сайта в браузере — отдельные. Перенос — «Экспорт всего» → «Импорт из файла».</p>
+    <small>${usage ? 'Занято: ' + usage : ''}</small>`
+    : DB.db ? `
     <b>Где хранятся данные</b>
     <p class="ok">Сохранено <b>в этом браузере на этом устройстве</b>${t ? ', последний раз в ' + t : ''}. Каждое изменение записывается сразу.</p>
     <p class="no">На сервер и в интернет ничего не отправляется. GitHub хранит только саму программу, не ваши доски.</p>
@@ -1799,6 +1814,83 @@ saveState.addEventListener('mouseenter', showSaveTip);
 saveState.addEventListener('mouseleave', () => $('#saveTip').classList.add('hidden'));
 saveState.addEventListener('click', () => $('#saveTip').classList.contains('hidden') ? showSaveTip() : $('#saveTip').classList.add('hidden'));
 
+// ================= Приложение для ПК (Tauri) =================
+// В приложении: «Сохранить как…» вместо загрузок, внешние ссылки — в браузере, автокопии в выбранную папку.
+async function saveBlob(name, blob, ext, label) {
+  name = String(name).replace(/[\\/:*?"<>|]+/g, '_');
+  if (!DESKTOP) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name + '.' + ext;
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    return true;
+  }
+  try {
+    const path = await tauriInvoke('plugin:dialog|save', { options: { defaultPath: name + '.' + ext, filters: [{ name: label || ext, extensions: [ext] }] } });
+    if (!path) return false;
+    await tauriInvoke('write_file', { path, data: Array.from(new Uint8Array(await blob.arrayBuffer())) });
+    toast('Сохранено: ' + path, 4500); return true;
+  } catch (err) { toast('Не удалось сохранить файл: ' + err, 6000); return false; }
+}
+function openExternal(url) {
+  if (DESKTOP) tauriInvoke('plugin:opener|open_url', { url }).catch(() => toast('Не удалось открыть ссылку'));
+  else window.open(url, '_blank', 'noopener');
+}
+// ---- резервные копии в папку (например, в Яндекс.Диск / OneDrive — тогда они ещё и синхронизируются)
+function scheduleBackup() { if (!DESKTOP || !backupDir) return; clearTimeout(backupTimer); backupTimer = setTimeout(doBackup, 5000); }
+async function doBackup(manual) {
+  clearTimeout(backupTimer); backupTimer = null;
+  if (!DESKTOP || !backupDir) return;
+  try {
+    const boards = await DB.all('boards');
+    const now = new Date(), day = now.toISOString().slice(0, 10);
+    await tauriInvoke('write_backup', { dir: backupDir, latestName: 'Развилка — кампания.json', dailyName: `Развилка — бэкап ${day}.json`,
+      contents: JSON.stringify({ app: 'razvilka', kind: 'workspace', version: 1, ws, boards }), keep: 14 });
+    lastBackupAt = now; renderBackupBtn();
+    if (manual) toast('Копия сохранена в «' + backupDir + '»', 4000);
+  } catch (err) { toast('Резервная копия не записалась: ' + err, 6000); }
+}
+function renderBackupBtn() {
+  const b = $('#backupBtn'); if (!b) return;
+  const folder = backupDir ? backupDir.split(/[\\/]/).filter(Boolean).pop() : '';
+  b.textContent = backupDir ? `Резервные копии: ${folder}` + (lastBackupAt ? ` · ${lastBackupAt.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}` : '') : 'Резервные копии: выключены';
+  b.title = backupDir || 'Выберите папку — приложение будет само сохранять туда копию всей кампании';
+}
+async function chooseBackupDir() {
+  try {
+    const dir = await tauriInvoke('plugin:dialog|open', { options: { directory: true, multiple: false, title: 'Папка для резервных копий Развилки' } });
+    if (!dir) return;
+    backupDir = Array.isArray(dir) ? dir[0] : dir;
+    try { localStorage.setItem(BK_KEY, backupDir); } catch {}
+    renderBackupBtn(); await doBackup(true);
+  } catch (err) { toast('Не удалось выбрать папку: ' + err, 5000); }
+}
+let importMode = 'add';
+function backupMenu(btnEl) {
+  const r = btnEl.getBoundingClientRect();
+  const opts = [{ label: backupDir ? 'Сменить папку…' : 'Выбрать папку…', fn: chooseBackupDir }];
+  if (backupDir) opts.push({ label: 'Сохранить копию сейчас', fn: () => doBackup(true) },
+    { label: 'Выключить копии', fn: () => { backupDir = ''; try { localStorage.removeItem(BK_KEY); } catch {} renderBackupBtn(); } });
+  opts.push({ label: 'Восстановить из копии (заменить всё)…', danger: true, fn: () => { importMode = 'restore'; $('#importFile').click(); } });
+  showMenu(r.right + 8, r.top - 60, opts, 'Резервные копии');
+}
+async function restoreWorkspace(d) {
+  if (!await popAsk({ anchor: $('#backupBtn'), title: 'Заменить всё содержимое?', input: false, danger: true, ok: 'Заменить',
+    message: `Все текущие папки и доски заменятся содержимым копии (${(d.boards || []).length} досок). Отменить это будет нельзя.` })) return;
+  stopEdit(); clearTimeout(saveTimer);
+  for (const b of await DB.all('boards')) await DB.del('boards', b.id);
+  for (const b of d.boards) await DB.put('boards', b);
+  ws = { ...d.ws, id: 'ws' }; await DB.put('meta', ws);
+  boardId = null; contentChanged = false;
+  const start = ws.boards.find(b => b.id === ws.current) ? ws.current : ws.boards[0]?.id;
+  if (start) await openBoard(start);
+  renderTree(); toast('Кампания восстановлена из копии', 3000);
+}
+if (DESKTOP) {
+  const foot = $('.sbfoot');
+  const b = document.createElement('button'); b.id = 'backupBtn'; b.className = 'btn ghost';
+  b.addEventListener('click', () => backupMenu(b));
+  foot.insertBefore(b, foot.firstChild); renderBackupBtn();
+}
+
 // ================= Кнопки =================
 const actions = {
   sidebar: () => toggleSidebar(),
@@ -1810,10 +1902,8 @@ const actions = {
   newBoard: b => newBoard(undefined, undefined, sideAnchor(b)),
   exportAll, importAll: () => $('#importFile').click(), exportDocx,
   aiGuide: () => {
-    const blob = new Blob([window.RAZVILKA_AI_GUIDE || ''], { type: 'text/markdown' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'Развилка — инструкция для нейросети.md';
-    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
-    toast('Отдайте нейросети этот файл и документ сценария. Её ответ сохраните как .json и загрузите через «Импорт из файла».', 7000);
+    saveBlob('Развилка — инструкция для нейросети', new Blob([window.RAZVILKA_AI_GUIDE || ''], { type: 'text/markdown' }), 'md', 'Markdown');
+    if (!DESKTOP) toast('Отдайте нейросети этот файл и документ сценария. Её ответ сохраните как .json и загрузите через «Импорт из файла».', 7000);
   },
   theme: toggleTheme, help: () => toggleHelp(),
   window: openWindow, install: installApp, reattach: () => location.reload(),
