@@ -157,8 +157,8 @@ button, input, select { font: inherit; color: inherit; }
 .zone.sel { outline-offset: 0; }
 
 /* Картинки */
-.image { cursor: pointer; border-radius: 6px; background: var(--panel2); }
-.image img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 6px; pointer-events: none; -webkit-user-drag: none; }
+.image { cursor: pointer; border-radius: 10px; background: var(--panel2); }
+.image img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 10px; pointer-events: none; -webkit-user-drag: none; }
 .image .ph { position: absolute; inset: 0; display: grid; place-items: center; padding: 10px; text-align: center; color: var(--muted); font-size: 12px; word-break: break-all; }
 .image .ph[hidden] { display: none; }
 
@@ -414,7 +414,24 @@ body.mobile .pop { width: min(300px, calc(100vw - 16px)); }
 body.mobile .image .spo-btn { pointer-events: auto; }
 
 /* Свой акцентный цвет */
-#accentPick { position: fixed; left: -100px; top: 0; width: 1px; height: 1px; opacity: 0; }
 #menu .mk.round { border-radius: 50%; width: 14px; height: 14px; }
 #menu button.cur { background: var(--panel2); }
 .item.image.spoiler:not(.revealed) { overflow: hidden; } /* размытие картинки не вылезает за рамку */
+
+/* Картинка не загрузилась — кнопка повтора */
+.image .ph { gap: 8px; align-content: center; justify-items: center; }
+.img-retry {
+  pointer-events: auto; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+}
+.img-retry:hover { border-color: var(--accent); }
+.img-retry[hidden] { display: none; }
+body.mobile .image .img-retry { pointer-events: auto; }
+/* Своя палитра */
+.cpick { width: 280px; }
+.cp-prev { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; }
+.cp-sw { width: 38px; height: 38px; border-radius: 10px; flex: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
+.cp-r { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 14px; border-radius: 7px; margin-top: 6px; outline: none; }
+.cp-h { background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+.cp-r::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 2px solid rgba(0,0,0,.35); box-shadow: 0 1px 4px rgba(0,0,0,.4); cursor: pointer; }
+.cp-r::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: #fff; border: 2px solid rgba(0,0,0,.35); cursor: pointer; }

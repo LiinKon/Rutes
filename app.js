@@ -31,7 +31,7 @@ const ZONE_COLORS = ['#f0c060', '#6cc070', '#5b8def', '#e86fb0', '#a78bfa', '#f0
 const NOTE_COLORS = ['#f3d36b', '#9be08a', '#8fc1ff', '#ffadd2', '#c9b6ff', '#ffbf8a', '#e8e8e8'];
 const TEXT_TYPES = new Set(['card', 'text', 'note', 'callout']);
 const LINKABLE = new Set(['card', 'text', 'note', 'callout', 'image']);
-const APP_VERSION = '1.1.0'; // версия Развилки — менять вместе с desktop/src-tauri/tauri.conf.json
+const APP_VERSION = '1.1.1'; // версия Развилки — менять вместе с desktop/src-tauri/tauri.conf.json
 const MIN_S = 0.08, MAX_S = 3;
 const MOBILE = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820;
 if (MOBILE) document.body.classList.add('mobile');
@@ -224,10 +224,15 @@ function makeEl(it) {
     case 'note': el.innerHTML = `<div data-f="text" data-ph="Заметка"></div>`; break;
     case 'callout': el.innerHTML = `<div class="chead"></div><div data-f="text" data-ph="${ph}"></div>`; break;
     case 'zone': el.innerHTML = `<div class="zlabel" data-f="label" data-ph="Зона"></div>`; break;
-    case 'image': el.innerHTML = `<img alt="" referrerpolicy="no-referrer" draggable="false" decoding="async"><div class="ph">Загрузка…</div>`;
-      { const img = el.querySelector('img'), ph2 = el.querySelector('.ph');
-        img.onload = () => { ph2.hidden = true; };
-        img.onerror = () => { ph2.hidden = false; ph2.textContent = 'Картинка не загрузилась:\n' + img.src; }; }
+    case 'image': el.innerHTML = `<img alt="" referrerpolicy="no-referrer" draggable="false" decoding="async"><div class="ph"><span class="ph-text">Загрузка…</span><button class="img-retry" type="button" hidden>↻ Загрузить снова</button></div>`;
+      { const img = el.querySelector('img'), ph2 = el.querySelector('.ph'), txt = ph2.querySelector('.ph-text'), rb = ph2.querySelector('.img-retry');
+        img.onload = () => { ph2.hidden = true; el._tries = 0; };
+        img.onerror = () => {
+          if (!img.getAttribute('src')) return;
+          el._tries = (el._tries || 0) + 1;
+          if (el._tries === 1) { setTimeout(() => retryImage(el), 1500); return; } // одна тихая повторная попытка
+          ph2.hidden = false; txt.textContent = 'Картинка не загрузилась'; rb.hidden = false;
+        }; }
       break;
   }
   if (LINKABLE.has(it.type)) el.insertAdjacentHTML('beforeend', '<div class="port" title="Потяните, чтобы создать переход"></div>');
@@ -238,6 +243,15 @@ function makeEl(it) {
   return el;
 }
 
+// Повторная загрузка картинки: сначала тот же адрес заново, потом — с меткой против кэша
+function retryImage(el) {
+  const it = items.get(el.dataset.id); if (!it || !it.src) return;
+  const img = el.querySelector('img'), ph = el.querySelector('.ph');
+  ph.hidden = false; ph.querySelector('.ph-text').textContent = 'Загрузка…'; ph.querySelector('.img-retry').hidden = true;
+  const bust = (el._tries || 0) >= 2 ? (it.src.includes('?') ? '&' : '?') + '_r=' + Date.now() : '';
+  img.removeAttribute('src');
+  requestAnimationFrame(() => { img.src = it.src + bust; });
+}
 function applyTextStyle(f, it) {
   f.style.fontFamily = (FONT[it.font] || FONTS[0]).css;
   f.style.fontSize = it.size + 'px';
@@ -276,7 +290,10 @@ function fill(el, it) {
     case 'image': {
       el.style.height = it.h + 'px';
       const img = el.querySelector('img');
-      if (img.getAttribute('src') !== it.src) { el.querySelector('.ph').hidden = false; el.querySelector('.ph').textContent = 'Загрузка…'; img.src = it.src; }
+      if (img.getAttribute('src') !== it.src && !(img.getAttribute('src') || '').startsWith(it.src)) {
+        const ph = el.querySelector('.ph'); ph.hidden = false; ph.querySelector('.ph-text').textContent = 'Загрузка…'; ph.querySelector('.img-retry').hidden = true;
+        el._tries = 0; img.src = it.src;
+      }
       break;
     }
   }
@@ -446,6 +463,9 @@ viewport.addEventListener('pointerdown', e => {
   if (rmb && (MOBILE || ptrs.size)) return;
   // клик внутри редактируемого текста — отдаём браузеру
   if (editing && editing.el.contains(t)) return;
+  // телефон / узкое окно: тап по холсту закрывает боковую панель
+  if ((MOBILE || innerWidth < 760) && !sidebar.classList.contains('hidden')) { toggleSidebar(false); return; }
+  if (t.closest && t.closest('.img-retry')) { const el = t.closest('.item'); if (el) { el._tries = 2; retryImage(el); } return; }
   hideMenu(); hideSwatches();
   const p = vpPoint(e); ptrs.set(e.pointerId, p); lastPointer = p;
   try { viewport.setPointerCapture(e.pointerId); } catch {}
@@ -1164,13 +1184,59 @@ function accentMenu(btnEl) {
   const r = btnEl.getBoundingClientRect();
   let cur = ''; try { cur = localStorage.getItem('razvilka.accent') || ''; } catch {}
   const entries = ACCENTS.map(([label, c]) => ({ label: (c === cur ? '✓ ' : '') + label, mk: c || '#f0c060', fn: () => setAccent(c) }));
-  entries.push({ label: 'Свой цвет…', mk: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)', fn: () => {
-    const inp = $('#accentPick'); inp.value = cur || '#f0c060'; inp.click();
-  } });
+  entries.push({ label: 'Свой цвет…', mk: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)', fn: () => colorPicker(btnEl, cur || '#f0c060') });
   showMenu(r.left, r.bottom + 6, entries, 'Акцентный цвет');
   for (const m of menu.querySelectorAll('.mk')) { m.classList.add('round'); if (m.style.background.startsWith('conic')) m.style.background = 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)'; }
 }
-$('#accentPick').addEventListener('input', e => setAccent(e.target.value));
+// Своя палитра: ползунки оттенка, насыщенности и яркости + код цвета. Работает и на телефоне.
+const hsl2hex = (h, s, l) => {
+  s /= 100; l /= 100; const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = n => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)))).toString(16).padStart(2, '0');
+  return '#' + f(0) + f(8) + f(4);
+};
+function hex2hsl(hex) {
+  const n = parseInt(hex.slice(1), 16); let r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2; let h = 0, s = 0;
+  if (mx !== mn) { const d = mx - mn; s = l > .5 ? d / (2 - mx - mn) : d / (mx + mn);
+    h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h *= 60; }
+  return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
+}
+function colorPicker(anchorEl, start) {
+  if (popClose) popClose(null);
+  const before = (() => { try { return localStorage.getItem('razvilka.accent') || ''; } catch { return ''; } })();
+  let [h, sat, lig] = hex2hsl(start);
+  const pop = document.createElement('div'); pop.className = 'pop from-top cpick';
+  pop.innerHTML = `<div class="pop-title">Свой цвет</div>
+    <div class="cp-prev"><span class="cp-sw"></span><input class="pop-input cp-hex" maxlength="7" spellcheck="false"></div>
+    <label class="pop-lab">Оттенок<input type="range" class="cp-r cp-h" min="0" max="360"></label>
+    <label class="pop-lab">Насыщенность<input type="range" class="cp-r cp-s" min="20" max="100"></label>
+    <label class="pop-lab">Яркость<input type="range" class="cp-r cp-l" min="30" max="75"></label>
+    <div class="pop-btns"><button class="btn ghost cp-cancel">Отмена</button><button class="btn primary cp-ok">Готово</button></div><div class="pop-arrow"></div>`;
+  document.body.append(pop);
+  const $p = q => pop.querySelector(q), hexIn = $p('.cp-hex'), rh = $p('.cp-h'), rs = $p('.cp-s'), rl = $p('.cp-l');
+  const paint = (fromHex) => {
+    const hex = hsl2hex(h, sat, lig);
+    $p('.cp-sw').style.background = hex; if (!fromHex) hexIn.value = hex;
+    rh.value = h; rs.value = sat; rl.value = lig;
+    rs.style.background = `linear-gradient(90deg, ${hsl2hex(h, 20, lig)}, ${hsl2hex(h, 100, lig)})`;
+    rl.style.background = `linear-gradient(90deg, ${hsl2hex(h, sat, 30)}, ${hsl2hex(h, sat, 75)})`;
+    setAccent(hex);
+  };
+  rh.oninput = () => { h = +rh.value; paint(); }; rs.oninput = () => { sat = +rs.value; paint(); }; rl.oninput = () => { lig = +rl.value; paint(); };
+  hexIn.oninput = () => { const v = hexIn.value.trim(); if (/^#?[0-9a-f]{6}$/i.test(v)) { [h, sat, lig] = hex2hsl(v[0] === '#' ? v : '#' + v); paint(true); } };
+  paint();
+  const r = anchorEl.getBoundingClientRect(), pw = pop.offsetWidth;
+  const x = clamp(r.left + r.width / 2 - pw / 2, 8, innerWidth - pw - 8);
+  pop.style.left = x + 'px'; pop.style.top = (r.bottom + 12) + 'px';
+  $p('.pop-arrow').style.left = clamp(r.left + r.width / 2 - x - 7, 12, pw - 26) + 'px';
+  requestAnimationFrame(() => pop.classList.add('show'));
+  const close = keep => { if (!pop.isConnected) return; pop.remove(); document.removeEventListener('pointerdown', outside, true); popClose = null; if (!keep) setAccent(before); };
+  const outside = e => { if (!pop.contains(e.target)) close(true); };
+  setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+  $p('.cp-ok').onclick = () => close(true); $p('.cp-cancel').onclick = () => close(false);
+  pop.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); close(false); } if (e.key === 'Enter') close(true); });
+  popClose = () => close(true);
+}
 
 // ================= Справка =================
 function toggleHelp(force) {
