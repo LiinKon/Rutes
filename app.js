@@ -31,6 +31,7 @@ const ZONE_COLORS = ['#f0c060', '#6cc070', '#5b8def', '#e86fb0', '#a78bfa', '#f0
 const NOTE_COLORS = ['#f3d36b', '#9be08a', '#8fc1ff', '#ffadd2', '#c9b6ff', '#ffbf8a', '#e8e8e8'];
 const TEXT_TYPES = new Set(['card', 'text', 'note', 'callout']);
 const LINKABLE = new Set(['card', 'text', 'note', 'callout', 'image']);
+const APP_VERSION = '1.1.0'; // версия Развилки — менять вместе с desktop/src-tauri/tauri.conf.json
 const MIN_S = 0.08, MAX_S = 3;
 const MOBILE = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820;
 if (MOBILE) document.body.classList.add('mobile');
@@ -90,6 +91,7 @@ let boxMode = false;
 let maxZ = 0;
 const itemEls = new Map(), edgeEls = new Map();
 let editing = null;
+const revealed = new Set(); // открытые спойлеры — только на этот сеанс, после перезапуска снова скрыты
 let lastPointer = null;           // последняя позиция курсора на холсте (экран)
 let searchSet = new Set(), searchHits = [], searchIdx = -1;
 
@@ -229,6 +231,7 @@ function makeEl(it) {
       break;
   }
   if (LINKABLE.has(it.type)) el.insertAdjacentHTML('beforeend', '<div class="port" title="Потяните, чтобы создать переход"></div>');
+  if (it.type !== 'zone') el.insertAdjacentHTML('beforeend', '<div class="spo"><button class="spo-btn" type="button">🔒 Спойлер — показать</button></div><button class="spo-hide" type="button" title="Снова скрыть (H — скрыть все)">🔒</button>');
   if (it.type === 'zone') el.insertAdjacentHTML('beforeend', ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'].map(d => `<div class="zh zh-${d}" data-h="${d}"></div>`).join(''));
   else el.insertAdjacentHTML('beforeend', '<div class="rs" data-h="se" title="Размер"></div>');
   el._v = -1;
@@ -248,6 +251,8 @@ function applyTextStyle(f, it) {
 function fill(el, it) {
   el.style.width = it.w + 'px';
   el.style.zIndex = it.z;
+  el.classList.toggle('spoiler', !!it.spoiler);
+  el.classList.toggle('revealed', !!it.spoiler && revealed.has(it.id));
   const isEditing = editing && editing.id === it.id;
   const setF = (name, val) => { const f = el.querySelector(`[data-f="${name}"]`); if (f && !(isEditing && editing.field === name)) f.textContent = val || ''; return f; };
   switch (it.type) {
@@ -458,6 +463,8 @@ viewport.addEventListener('pointerdown', e => {
 
   const itemEl = t.closest('.item');
   const id = itemEl && itemEl.dataset.id, it = id && items.get(id);
+  if (it && t.closest('.spo-btn')) { setRevealed(it, true); ptrs.delete(e.pointerId); return; }
+  if (it && t.closest('.spo-hide')) { setRevealed(it, false); ptrs.delete(e.pointerId); return; }
   if (it && t.closest('.port')) { G = { type: 'link', from: id, start: p, pt: toWorld(p), over: null, moved: false }; return; }
   const handle = it && t.closest('[data-h]');
   if (handle) {
@@ -646,8 +653,18 @@ window.addEventListener('resize', schedule);
 
 // ================= Редактирование текста прямо на холсте =================
 function defaultField(it) { return it.type === 'card' ? (it.title ? 'text' : 'title') : it.type === 'zone' ? 'label' : 'text'; }
+function setRevealed(it, on) {
+  if (on) revealed.add(it.id); else revealed.delete(it.id);
+  touch(it); schedule(); renderFmt();
+}
+function hideAllSpoilers() {
+  let n = 0; for (const id of revealed) { const it = items.get(id); if (it) { touch(it); n++; } }
+  revealed.clear(); schedule(); renderFmt();
+  if (n) toast('Спойлеры снова скрыты', 1500);
+}
 function startEdit(id, field) {
   const it = items.get(id); if (!it || it.type === 'image') return;
+  if (it.spoiler && !revealed.has(id)) { setRevealed(it, true); return; } // скрытое сначала открываем
   if (MOBILE && it.type === 'zone') return;
   stopEdit();
   const el = itemEls.get(id); if (!el) return;
@@ -866,6 +883,7 @@ document.addEventListener('keydown', e => {
   const map = { KeyC: ['card'], KeyT: ['text'], KeyN: ['note'], KeyR: ['callout', { variant: 'remark' }], KeyK: ['callout', { variant: 'check' }], KeyZ: ['zone'] };
   if (map[e.code]) { e.preventDefault(); const [t, pr] = map[e.code]; const wp = viewCenterWorld(); createAt(t, t === 'zone' ? { x: wp.x - 40, y: wp.y - 30 } : wp, pr); return; }
   if (e.code === 'KeyI') { e.preventDefault(); askImage(viewCenterWorld()); }
+  if (e.code === 'KeyH') { e.preventDefault(); hideAllSpoilers(); }
 });
 
 // ================= Панель форматирования =================
@@ -957,6 +975,13 @@ function renderFmt() {
     }));
   if (!MOBILE && alignPlan()) fmt.append(btn(ALIGN_ICON, 'Выровнять / центрировать', ev => showAlignMenu(ev.currentTarget)));
   if (TEXT_TYPES.has(first.type) || first.type === 'zone') fmt.append(btn('✎', 'Редактировать текст', () => startEdit(first.id)));
+  const spoAble = list.filter(it => it.type !== 'zone');
+  if (spoAble.length) {
+    const allSpo = spoAble.every(it => it.spoiler);
+    fmt.append(btn('<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c5 0 9 4.5 10 7a13 13 0 0 1-3.2 4.2M6.6 6.6A13 13 0 0 0 2 12c1 2.5 5 7 10 7a9.8 9.8 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+      allSpo ? 'Убрать спойлер' : 'Спойлер — скрыть от игроков (H — скрыть все открытые)',
+      () => applyAll(it => { it.spoiler = !allSpo; if (allSpo) revealed.delete(it.id); }, it => it.type !== 'zone'), allSpo ? 'on' : ''));
+  }
   fmt.append(btn('<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>', 'Удалить', deleteSelection));
   fmt.classList.remove('hidden');
 }
@@ -1117,6 +1142,36 @@ function setTheme(t) {
 function toggleTheme() { setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'); }
 { let t = 'dark'; try { t = localStorage.getItem('razvilka.theme') || 'dark'; } catch {} setTheme(t); }
 
+// ================= Акцентный цвет =================
+const ACCENTS = [
+  ['Золото (по умолчанию)', ''], ['Оранжевый', '#f08a3c'], ['Красный', '#e5484d'], ['Розовый', '#ec6fb4'],
+  ['Фиолетовый', '#9b7bf5'], ['Синий', '#4f8ff7'], ['Бирюзовый', '#2fb5a8'], ['Зелёный', '#5fbf5a'],
+];
+function setAccent(c) {
+  const root = document.documentElement.style;
+  if (!c) { root.removeProperty('--accent'); root.removeProperty('--on-accent'); }
+  else {
+    root.setProperty('--accent', c);
+    // текст на акцентных кнопках — тёмный на светлых цветах, белый на тёмных
+    const n = parseInt(c.slice(1), 16), r = n >> 16 & 255, g = n >> 8 & 255, b = n & 255;
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    root.setProperty('--on-accent', lum > 0.6 ? '#111' : '#fff');
+  }
+  try { c ? localStorage.setItem('razvilka.accent', c) : localStorage.removeItem('razvilka.accent'); } catch {}
+}
+{ let a = ''; try { a = localStorage.getItem('razvilka.accent') || ''; } catch {} if (/^#[0-9a-f]{6}$/i.test(a)) setAccent(a); }
+function accentMenu(btnEl) {
+  const r = btnEl.getBoundingClientRect();
+  let cur = ''; try { cur = localStorage.getItem('razvilka.accent') || ''; } catch {}
+  const entries = ACCENTS.map(([label, c]) => ({ label: (c === cur ? '✓ ' : '') + label, mk: c || '#f0c060', fn: () => setAccent(c) }));
+  entries.push({ label: 'Свой цвет…', mk: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)', fn: () => {
+    const inp = $('#accentPick'); inp.value = cur || '#f0c060'; inp.click();
+  } });
+  showMenu(r.left, r.bottom + 6, entries, 'Акцентный цвет');
+  for (const m of menu.querySelectorAll('.mk')) { m.classList.add('round'); if (m.style.background.startsWith('conic')) m.style.background = 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)'; }
+}
+$('#accentPick').addEventListener('input', e => setAccent(e.target.value));
+
 // ================= Справка =================
 function toggleHelp(force) {
   const h = $('#help'), show = force !== undefined ? force : h.classList.contains('hidden');
@@ -1154,7 +1209,7 @@ function showMenu(x, y, entries, title) {
 }
 function hideMenu() { menu.classList.add('hidden'); }
 document.addEventListener('pointerdown', e => {
-  if (!menu.contains(e.target) && !e.target.closest('.more') && !e.target.closest('[data-act="insert"]')) hideMenu();
+  if (!menu.contains(e.target) && !e.target.closest('.more') && !e.target.closest('[data-act="insert"]') && !e.target.closest('[data-act="accent"]')) hideMenu();
   if (!swatches.contains(e.target) && !fmt.contains(e.target)) hideSwatches();
 }, true);
 
@@ -1712,7 +1767,8 @@ function boardToDocx() {
   body += para(run(title, { b: true, sz: 48, color: '1F3864' }), { style: 'Title' });
   body += para(run('Экспорт из «Развилки» · ' + new Date().toLocaleDateString('ru'), { i: true, sz: 18, color: '8C8C8C' }));
   body += para(run('Плашки: ', { b: true, sz: 18, color: '505050' }) + run('реплика персонажа · заметка ДМ · проверка · механика боя · формат новеллы · служебная пометка · TODO · заметка с холста', { sz: 18, color: '505050' }));
-  const satXml = o => {
+  const satXml = o => (o.spoiler ? para(run('🔒 Спойлер — не показывать игрокам', { sz: 17, b: true, color: '8C8C8C' }), { keep: true }) : '') + satXml0(o);
+  const satXml0 = o => {
     if (o.type === 'image') return para(run('🖼 Картинка: ', { b: true, color: '505050' }) + run(o.src || '', { color: '3D6FD1', u: true }), { plate: 'note' });
     if (o.type === 'callout') { const v = o.variant === 'read' ? 'read' : o.variant === 'warn' ? 'warn' : o.variant === 'check' ? 'check' : 'dm'; const head = (CALLOUTS[o.variant] || CALLOUTS.remark).name;
       const parts = String(o.text || '').split(/\n{2,}/);
@@ -1722,7 +1778,7 @@ function boardToDocx() {
   };
   const emitCard = c => {
     const k = KIND[c.kind] || KINDS[0];
-    let x = para(run(cardTitle(c), { color: '1F3864' }) + run('   ' + k.name.toUpperCase(), { sz: 16, color: k.color.slice(1).toUpperCase(), b: true }), { style: 'Heading3', keep: true });
+    let x = para(run(cardTitle(c), { color: '1F3864' }) + run('   ' + k.name.toUpperCase(), { sz: 16, color: k.color.slice(1).toUpperCase(), b: true }) + (c.spoiler ? run('   🔒 СПОЙЛЕР', { sz: 16, color: '8C8C8C', b: true }) : ''), { style: 'Heading3', keep: true });
     x += textXml(c.text);
     for (const s of satOf.get(c.id) || []) x += satXml(s);
     const outs = [...edges.values()].filter(e => e.from === c.id).map(e => ({ e, t: items.get(e.to) })).filter(o => o.t);
@@ -1891,6 +1947,15 @@ if (DESKTOP) {
   foot.insertBefore(b, foot.firstChild); renderBackupBtn();
 }
 
+// ================= Версия =================
+async function showVersion() {
+  let v = APP_VERSION, where = 'веб-версия';
+  if (DESKTOP) { where = 'приложение для ПК'; try { v = await tauriInvoke('plugin:app|version'); } catch {} }
+  const text = `Развилка ${v} · ${where}`;
+  for (const el of document.querySelectorAll('.app-version')) el.textContent = text;
+}
+showVersion();
+
 // ================= Кнопки =================
 const actions = {
   sidebar: () => toggleSidebar(),
@@ -1905,7 +1970,7 @@ const actions = {
     saveBlob('Развилка — инструкция для нейросети', new Blob([window.RAZVILKA_AI_GUIDE || ''], { type: 'text/markdown' }), 'md', 'Markdown');
     if (!DESKTOP) toast('Отдайте нейросети этот файл и документ сценария. Её ответ сохраните как .json и загрузите через «Импорт из файла».', 7000);
   },
-  theme: toggleTheme, help: () => toggleHelp(),
+  theme: toggleTheme, help: () => toggleHelp(), accent: b => accentMenu(b),
   window: openWindow, install: installApp, reattach: () => location.reload(),
 };
 document.addEventListener('click', e => {
