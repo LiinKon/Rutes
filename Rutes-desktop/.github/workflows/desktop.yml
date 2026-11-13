@@ -1,0 +1,59 @@
+# Сборка приложения «Развилка» для Windows.
+# Запуск: вкладка Actions → «Сборка приложения для ПК» → Run workflow.
+name: Сборка приложения для ПК
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Собрать приложение и установщик
+        working-directory: desktop
+        run: |
+          npm install --no-audit --no-fund
+          npx tauri build
+
+      - name: Подготовить файл установщика
+        run: |
+          VERSION=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          cp desktop/src-tauri/target/release/bundle/nsis/*-setup.exe "Razvilka-setup-$VERSION.exe"
+          ls -la Razvilka-setup-*.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Razvilka-setup-${{ env.VERSION }}
+          path: Razvilka-setup-*.exe
+
+      - name: Выложить в Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-v${{ env.VERSION }}
+          name: Развилка для ПК ${{ env.VERSION }}
+          files: Razvilka-setup-*.exe
+          body: |
+            **Как установить:** скачайте `Razvilka-setup-${{ env.VERSION }}.exe` ниже и запустите.
+            Права администратора не нужны — приложение ставится для текущего пользователя.
+
+            Windows может показать «Система Windows защитила ваш компьютер» — программа не подписана платным сертификатом.
+            Нажмите «Подробнее» → «Выполнить в любом случае».
